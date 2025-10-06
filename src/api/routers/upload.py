@@ -1,7 +1,7 @@
 """
-File upload router
+Document upload router (part of session resources)
 """
-from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from fastapi import APIRouter, UploadFile, File, HTTPException
 from pathlib import Path
 import os
 import aiofiles
@@ -12,16 +12,16 @@ from services.session_service import session_manager
 from services.document_service import document_service
 
 
-router = APIRouter(prefix="/upload", tags=["upload"])
+router = APIRouter(prefix="/session", tags=["document"])
 
 
 # Ensure upload directory exists
 os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
 
 
-@router.post("", response_model=UploadResponse)
+@router.post("/{session_id}/document", response_model=UploadResponse)
 async def upload_document(
-    session_id: str = Form(...),
+    session_id: str,
     file: UploadFile = File(...)
 ):
     """
@@ -76,7 +76,7 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
 
-@router.delete("/{session_id}")
+@router.delete("/{session_id}/document")
 async def delete_document(session_id: str):
     """Delete uploaded document for a session"""
     session = session_manager.get_session(session_id)

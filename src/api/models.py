@@ -13,9 +13,8 @@ class Message(BaseModel):
     timestamp: Optional[datetime] = None
 
 
-class ChatRequest(BaseModel):
-    """Request body for chat endpoint"""
-    session_id: str = Field(..., description="Unique session identifier")
+class MessageRequest(BaseModel):
+    """Request body for message endpoint"""
     message: str = Field(..., description="User message")
     use_document: bool = Field(default=False, description="Whether to use uploaded document context")
 

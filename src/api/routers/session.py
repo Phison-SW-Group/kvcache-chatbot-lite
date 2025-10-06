@@ -1,27 +1,65 @@
 """
-Chat router with streaming support
+Session router with RESTful design
 """
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from datetime import datetime
 import json
 
-from models import ChatRequest, ChatResponse, SessionInfo
+from models import MessageRequest, ChatResponse, SessionInfo
 from services.session_service import session_manager
 from services.llm_service import llm_service
 
 
-router = APIRouter(prefix="/chat", tags=["chat"])
+router = APIRouter(prefix="/session", tags=["session"])
 
 
-@router.post("/message", response_model=ChatResponse)
-async def send_message(request: ChatRequest):
+@router.get("/{session_id}", response_model=SessionInfo)
+async def get_session_info(session_id: str):
+    """Get information about a session"""
+    session = session_manager.get_session(session_id)
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    return session.get_info()
+
+
+@router.delete("/{session_id}")
+async def delete_session(session_id: str):
+    """Delete a conversation session"""
+    success = session_manager.delete_session(session_id)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    return {"message": "Session deleted successfully"}
+
+
+@router.get("/{session_id}/messages")
+async def get_messages(session_id: str):
+    """Get all messages (chat history) for a session"""
+    session = session_manager.get_session(session_id)
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    return {
+        "session_id": session_id,
+        "messages": session.get_messages(),
+        "has_document": session.has_document(),
+        "document_filename": session.document_filename
+    }
+
+
+@router.post("/{session_id}/messages", response_model=ChatResponse)
+async def send_message(session_id: str, request: MessageRequest):
     """
     Send a message in a conversation (non-streaming)
     Maintains conversation history for multi-turn dialogue
     """
     # Get or create session
-    session = session_manager.get_or_create_session(request.session_id)
+    session = session_manager.get_or_create_session(session_id)
     
     # Add user message to history
     session.add_message("user", request.message)
@@ -47,20 +85,20 @@ async def send_message(request: ChatRequest):
     session.add_message("assistant", full_response)
     
     return ChatResponse(
-        session_id=request.session_id,
+        session_id=session_id,
         message=full_response,
         timestamp=datetime.now()
     )
 
 
-@router.post("/stream")
-async def stream_message(request: ChatRequest):
+@router.post("/{session_id}/messages/stream")
+async def stream_message(session_id: str, request: MessageRequest):
     """
     Send a message with streaming response (SSE)
     Better UX for real-time LLM responses
     """
     # Get or create session
-    session = session_manager.get_or_create_session(request.session_id)
+    session = session_manager.get_or_create_session(session_id)
     
     # Add user message to history
     session.add_message("user", request.message)
@@ -106,42 +144,4 @@ async def stream_message(request: ChatRequest):
             "Connection": "keep-alive",
         }
     )
-
-
-@router.get("/session/{session_id}", response_model=SessionInfo)
-async def get_session_info(session_id: str):
-    """Get information about a session"""
-    session = session_manager.get_session(session_id)
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    return session.get_info()
-
-
-@router.delete("/session/{session_id}")
-async def delete_session(session_id: str):
-    """Delete a conversation session"""
-    success = session_manager.delete_session(session_id)
-    
-    if not success:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    return {"message": "Session deleted successfully"}
-
-
-@router.get("/history/{session_id}")
-async def get_chat_history(session_id: str):
-    """Get full chat history for a session"""
-    session = session_manager.get_session(session_id)
-    
-    if not session:
-        raise HTTPException(status_code=404, detail="Session not found")
-    
-    return {
-        "session_id": session_id,
-        "messages": session.get_messages(),
-        "has_document": session.has_document(),
-        "document_filename": session.document_filename
-    }
 

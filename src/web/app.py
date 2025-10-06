@@ -24,11 +24,9 @@ class ChatbotClient:
         """Upload a document to the backend"""
         with open(file_path, 'rb') as f:
             files = {'file': f}
-            data = {'session_id': self.session_id}
             response = self.client.post(
-                f"{self.api_base_url}/upload",
-                files=files,
-                data=data
+                f"{self.api_base_url}/session/{self.session_id}/document",
+                files=files
             )
             response.raise_for_status()
             return response.json()
@@ -36,12 +34,11 @@ class ChatbotClient:
     def send_message(self, message: str, use_document: bool = False) -> str:
         """Send a message and get response (non-streaming)"""
         payload = {
-            "session_id": self.session_id,
             "message": message,
             "use_document": use_document
         }
         response = self.client.post(
-            f"{self.api_base_url}/chat/message",
+            f"{self.api_base_url}/session/{self.session_id}/messages",
             json=payload
         )
         response.raise_for_status()
@@ -50,14 +47,13 @@ class ChatbotClient:
     def stream_message(self, message: str, use_document: bool = False):
         """Send a message and get streaming response"""
         payload = {
-            "session_id": self.session_id,
             "message": message,
             "use_document": use_document
         }
         
         with self.client.stream(
             "POST",
-            f"{self.api_base_url}/chat/stream",
+            f"{self.api_base_url}/session/{self.session_id}/messages/stream",
             json=payload
         ) as response:
             response.raise_for_status()
@@ -94,7 +90,7 @@ class ChatbotClient:
     def get_chat_history(self) -> list:
         """Get full chat history"""
         response = self.client.get(
-            f"{self.api_base_url}/chat/history/{self.session_id}"
+            f"{self.api_base_url}/session/{self.session_id}/messages"
         )
         if response.status_code == 404:
             return []
@@ -104,7 +100,7 @@ class ChatbotClient:
     def reset_session(self):
         """Reset the session (create new session ID)"""
         try:
-            self.client.delete(f"{self.api_base_url}/chat/session/{self.session_id}")
+            self.client.delete(f"{self.api_base_url}/session/{self.session_id}")
         except:
             pass
         self.session_id = str(uuid.uuid4())
