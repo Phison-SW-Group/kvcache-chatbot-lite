@@ -9,6 +9,7 @@ import json
 from models import MessageRequest, ChatResponse, SessionInfo
 from services.session_service import session_manager
 from services.llm_service import llm_service
+from services.document_manager import document_manager
 
 
 router = APIRouter(prefix="/session", tags=["session"])
@@ -67,14 +68,16 @@ async def send_message(session_id: str, request: MessageRequest):
     # Prepare messages for LLM
     messages = session.get_messages_for_llm()
     
-    # Add document context if requested and available
-    if request.use_document and session.has_document():
-        # Insert document as system message
-        document_msg = {
-            "role": "system",
-            "content": f"Document content:\n\n{session.document_content}\n\nPlease answer based on this document."
-        }
-        messages.insert(0, document_msg)
+    # Add document context if document_id is provided
+    if request.document_id:
+        document_content = document_manager.get_document_content(request.document_id)
+        if document_content:
+            # Insert document as system message at the beginning
+            document_msg = {
+                "role": "system",
+                "content": document_content
+            }
+            messages.insert(0, document_msg)
     
     # Generate response (collect full response)
     full_response = ""
@@ -106,13 +109,16 @@ async def stream_message(session_id: str, request: MessageRequest):
     # Prepare messages for LLM
     messages = session.get_messages_for_llm()
     
-    # Add document context if requested and available
-    if request.use_document and session.has_document():
-        document_msg = {
-            "role": "system",
-            "content": f"Document content:\n\n{session.document_content}\n\nPlease answer based on this document."
-        }
-        messages.insert(0, document_msg)
+    # Add document context if document_id is provided
+    if request.document_id:
+        document_content = document_manager.get_document_content(request.document_id)
+        if document_content:
+            # Insert document as system message at the beginning
+            document_msg = {
+                "role": "system",
+                "content": document_content
+            }
+            messages.insert(0, document_msg)
     
     async def event_generator():
         """Generate SSE events"""

@@ -16,7 +16,7 @@ class Message(BaseModel):
 class MessageRequest(BaseModel):
     """Request body for message endpoint"""
     message: str = Field(..., description="User message")
-    use_document: bool = Field(default=False, description="Whether to use uploaded document context")
+    document_id: Optional[str] = Field(default=None, description="Document ID to use as context")
 
 
 class ChatResponse(BaseModel):
@@ -26,8 +26,24 @@ class ChatResponse(BaseModel):
     timestamp: datetime
 
 
+class DocumentUploadResponse(BaseModel):
+    """Response body for document upload endpoint"""
+    doc_id: str
+    filename: str
+    file_size: int
+    message: str
+
+
+class DocumentInfo(BaseModel):
+    """Document information"""
+    doc_id: str
+    filename: str
+    file_size: int
+    uploaded_at: str
+
+
 class UploadResponse(BaseModel):
-    """Response body for file upload endpoint"""
+    """Response body for file upload endpoint (legacy)"""
     session_id: str
     filename: str
     file_size: int

@@ -14,28 +14,40 @@ API_BASE_URL = "http://localhost:8000/api/v1"
 
 class ChatbotClient:
     """Client for interacting with the backend API"""
-    
+
     def __init__(self, api_base_url: str):
         self.api_base_url = api_base_url
         self.session_id = str(uuid.uuid4())
         self.client = httpx.Client(timeout=30.0)
-    
+
     def upload_document(self, file_path: str) -> dict:
-        """Upload a document to the backend"""
+        """Upload a document (independent of session)"""
         with open(file_path, 'rb') as f:
             files = {'file': f}
             response = self.client.post(
-                f"{self.api_base_url}/session/{self.session_id}/document",
+                f"{self.api_base_url}/documents/upload",
                 files=files
             )
             response.raise_for_status()
             return response.json()
+
+    def list_documents(self) -> list:
+        """Get list of all uploaded documents"""
+        response = self.client.get(f"{self.api_base_url}/documents/list")
+        response.raise_for_status()
+        return response.json()
+
+    def delete_document(self, doc_id: str) -> dict:
+        """Delete a document"""
+        response = self.client.delete(f"{self.api_base_url}/documents/{doc_id}")
+        response.raise_for_status()
+        return response.json()
     
-    def send_message(self, message: str, use_document: bool = False) -> str:
+    def send_message(self, message: str, document_id: Optional[str] = None) -> str:
         """Send a message and get response (non-streaming)"""
         payload = {
             "message": message,
-            "use_document": use_document
+            "document_id": document_id
         }
         response = self.client.post(
             f"{self.api_base_url}/session/{self.session_id}/messages",
@@ -43,14 +55,14 @@ class ChatbotClient:
         )
         response.raise_for_status()
         return response.json()["message"]
-    
-    def stream_message(self, message: str, use_document: bool = False):
+
+    def stream_message(self, message: str, document_id: Optional[str] = None):
         """Send a message and get streaming response"""
         payload = {
             "message": message,
-            "use_document": use_document
+            "document_id": document_id
         }
-        
+
         with self.client.stream(
             "POST",
             f"{self.api_base_url}/session/{self.session_id}/messages/stream",
@@ -86,7 +98,7 @@ class ChatbotClient:
                     except json.JSONDecodeError as e:
                         print(f"Failed to parse SSE data: {line}, error: {e}")
                         continue
-    
+
     def get_chat_history(self) -> list:
         """Get full chat history"""
         response = self.client.get(
@@ -113,7 +125,7 @@ client = ChatbotClient(API_BASE_URL)
 def chat_with_bot(
     message: str,
     history: List[Tuple[str, str]],
-    use_document: bool
+    selected_doc: Optional[str]
 ) -> Generator[Tuple[List[Tuple[str, str]], str], None, None]:
     """
     Handle chat interaction
@@ -121,7 +133,7 @@ def chat_with_bot(
     Args:
         message: User message
         history: Chat history
-        use_document: Whether to use uploaded document
+        selected_doc: Selected document ID (None if no document selected)
         
     Yields:
         Updated history and empty message box
@@ -134,10 +146,15 @@ def chat_with_bot(
     history.append((message, ""))
     yield history, ""
     
+    # Parse document ID from dropdown value
+    doc_id = None
+    if selected_doc and selected_doc != "None":
+        doc_id = selected_doc
+
     # Stream response from backend
     full_response = ""
     try:
-        for chunk in client.stream_message(message, use_document):
+        for chunk in client.stream_message(message, doc_id):
             full_response += chunk
             history[-1] = (message, full_response)
             yield history, ""
@@ -147,7 +164,22 @@ def chat_with_bot(
         yield history, ""
 
 
-def upload_file(file) -> str:
+def get_document_choices() -> List[Tuple[str, str]]:
+    """Get list of documents for dropdown"""
+    try:
+        docs = client.list_documents()
+        if not docs:
+            return [("No documents uploaded", "None")]
+        choices = [("No document selected", "None")]
+        for doc in docs:
+            choices.append((doc['filename'], doc['doc_id']))
+        return choices
+    except Exception as e:
+        print(f"Error fetching documents: {e}")
+        return [("Error loading documents", "None")]
+
+
+def upload_file(file) -> Tuple[str, gr.Dropdown]:
     """
     Handle file upload
     
@@ -155,18 +187,20 @@ def upload_file(file) -> str:
         file: Uploaded file object
         
     Returns:
-        Status message
+        Status message and updated dropdown
     """
     if file is None:
-        return "Please select a file to upload"
+        return "Please select a file to upload", gr.Dropdown(choices=get_document_choices())
     
     try:
         result = client.upload_document(file.name)
-        return f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes"
+        msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes"
+        # Refresh dropdown choices
+        return msg, gr.Dropdown(choices=get_document_choices())
     except httpx.HTTPStatusError as e:
-        return f"❌ Upload failed: {e.response.json().get('detail', str(e))}"
+        return f"❌ Upload failed: {e.response.json().get('detail', str(e))}", gr.Dropdown(choices=get_document_choices())
     except Exception as e:
-        return f"❌ Upload failed: {str(e)}. Please make sure the backend server is running."
+        return f"❌ Upload failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=get_document_choices())
 
 
 def clear_chat() -> Tuple[List, str]:
@@ -175,19 +209,27 @@ def clear_chat() -> Tuple[List, str]:
     return [], "✓ Chat cleared. New session started."
 
 
+def refresh_documents() -> gr.Dropdown:
+    """Refresh document list"""
+    return gr.Dropdown(choices=get_document_choices())
+
+
 # Create Gradio interface with simplified layout
 with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
     gr.Markdown("# 🤖 KVCache Chatbot")
     
     with gr.Row():
-        # Left sidebar - Document upload
+        # Left sidebar - Document management
         with gr.Column(scale=1):
-            gr.Markdown("### 📄 Upload Document")
+            gr.Markdown("### 📄 Document Management")
+
+            # Upload section
+            gr.Markdown("**Upload Document**")
             file_upload = gr.File(
                 label="",
                 file_types=[".txt"],
                 type="filepath",
-                height=200
+                height=150
             )
             upload_btn = gr.Button("Upload", variant="primary", size="lg")
             upload_status = gr.Textbox(
@@ -197,7 +239,20 @@ with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
                 lines=2,
                 show_label=False
             )
-        
+
+            gr.Markdown("---")
+
+            # Document selector section
+            gr.Markdown("**Select Document**")
+            doc_dropdown = gr.Dropdown(
+                choices=get_document_choices(),
+                value="None",
+                label="",
+                show_label=False,
+                interactive=True
+            )
+            refresh_btn = gr.Button("Refresh List", size="sm")
+
         # Main chat area
         with gr.Column(scale=3):
             chatbot = gr.Chatbot(
@@ -206,7 +261,7 @@ with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
                 show_copy_button=True
             )
             
-            # Message input with checkbox
+            # Message input
             with gr.Row():
                 msg = gr.Textbox(
                     label="",
@@ -214,11 +269,6 @@ with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
                     scale=9,
                     lines=1,
                     show_label=False
-                )
-                use_doc_checkbox = gr.Checkbox(
-                    label="Use Doc",
-                    value=False,
-                    scale=1
                 )
                 clear_btn = gr.Button("Clear", variant="secondary", scale=1)
     
@@ -248,7 +298,7 @@ with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
     # Chat events
     msg.submit(
         fn=chat_with_bot,
-        inputs=[msg, chatbot, use_doc_checkbox],
+        inputs=[msg, chatbot, doc_dropdown],
         outputs=[chatbot, msg]
     )
     
@@ -256,7 +306,14 @@ with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
     upload_btn.click(
         fn=upload_file,
         inputs=[file_upload],
-        outputs=[upload_status]
+        outputs=[upload_status, doc_dropdown]
+    )
+
+    # Document management events
+    refresh_btn.click(
+        fn=refresh_documents,
+        inputs=[],
+        outputs=[doc_dropdown]
     )
     
     # Clear chat

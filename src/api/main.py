@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from config import settings
-from routers import session, upload
+from routers import session, upload, document
 from services.session_service import session_manager
 from services.llm_service import llm_service
 
@@ -56,7 +56,8 @@ app.add_middleware(
 
 # Include routers
 app.include_router(session.router, prefix=settings.API_PREFIX)
-app.include_router(upload.router, prefix=settings.API_PREFIX)
+app.include_router(upload.router, prefix=settings.API_PREFIX)  # Legacy
+app.include_router(document.router, prefix=settings.API_PREFIX)  # New independent documents
 
 
 @app.get("/")
@@ -69,7 +70,8 @@ async def root():
             "docs": "/docs",
             "session": f"{settings.API_PREFIX}/session/{{session_id}}",
             "messages": f"{settings.API_PREFIX}/session/{{session_id}}/messages",
-            "document": f"{settings.API_PREFIX}/session/{{session_id}}/document"
+            "documents": f"{settings.API_PREFIX}/documents",
+            "upload_document": f"{settings.API_PREFIX}/documents/upload"
         }
     }
 
