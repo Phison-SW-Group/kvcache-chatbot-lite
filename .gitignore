@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Environment
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Project specific
+uploads/
+logs/
+
+# OS
+.DS_Store
+
+# Cursor
+.cursor
