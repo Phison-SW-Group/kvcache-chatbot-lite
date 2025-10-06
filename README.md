@@ -62,30 +62,30 @@ pip install -r requirements.txt
 
 ### Quick Start (Recommended)
 
-**一鍵啟動前後端：**
+**One-command startup for both frontend and backend:**
 
 ```bash
 source .venv/bin/activate
 ./start.sh
 ```
 
-這個腳本會：
-- ✅ 自動檢查並安裝依賴
-- ✅ 後台啟動後端 (port 8000)
-- ✅ 前台啟動前端 (port 7860)
-- ✅ 按 `Ctrl+C` 會同時停止兩個服務
+This script will:
+- ✅ Automatically check and install dependencies
+- ✅ Start backend in background (port 8000)
+- ✅ Start frontend in foreground (port 7860)
+- ✅ Press `Ctrl+C` to stop both services
 
-**停止服務：**
+**To stop services:**
 
 ```bash
 ./stop.sh
 ```
 
-或直接在運行的終端按 `Ctrl+C`
+Or press `Ctrl+C` in the running terminal
 
 ### Manual Start (Alternative)
 
-如果你想分別啟動前後端：
+If you want to start frontend and backend separately:
 
 **Terminal 1 - Backend:**
 ```bash
@@ -101,10 +101,10 @@ source .venv/bin/activate
 
 ### Access Points
 
-- **前端界面**: http://localhost:7860
-- **後端 API**: http://localhost:8000
-- **API 文檔**: http://localhost:8000/docs
-- **後端日誌**: `logs/backend.log` (統一啟動時)
+- **Frontend**: http://localhost:7860
+- **Backend API**: http://localhost:8000
+- **API Docs**: http://localhost:8000/docs
+- **Backend Logs**: `logs/backend.log` (when using unified startup)
 
 ## Usage
 
@@ -137,9 +137,9 @@ source .venv/bin/activate
 
 ## Configuration
 
-### LLM API 配置（可選）
+### LLM API Configuration (Optional)
 
-在 `src/api/` 目錄下創建 `.env` 文件：
+Create a `.env` file in the `src/api/` directory:
 
 ```env
 # LLM Settings - OpenAI Compatible API
@@ -149,9 +149,9 @@ LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=2000
 ```
 
-**注意：** 如果不配置 API key，系統會使用 mock 響應進行測試。
+**Note:** If you don't configure an API key, the system will use mock responses for testing.
 
-詳細配置說明請參考：[LLM_SETUP.md](LLM_SETUP.md)
+For detailed configuration instructions, see: [LLM_SETUP.md](LLM_SETUP.md)
 
 ## Extending the System
 
@@ -174,23 +174,23 @@ document_service.register_processor('.pdf', PdfProcessor())
 
 ### Integrating Real LLM (OpenAI Compatible API)
 
-系統已內建 OpenAI compatible API 支持！
+The system has built-in OpenAI compatible API support!
 
-**快速設定：**
+**Quick Setup:**
 
-1. 在 `src/api/` 創建 `.env` 文件
-2. 添加以下配置：
+1. Create a `.env` file in `src/api/`
+2. Add the following configuration:
    ```env
    LLM_MODEL=gpt-3.5-turbo
    LLM_API_KEY=your-openai-api-key-here
    ```
-3. 重啟後端即可
+3. Restart the backend
 
-**獲取 API Key：**
+**Get API Key:**
 - OpenAI: https://platform.openai.com/api-keys
-- 詳細說明：查看 [LLM_SETUP.md](LLM_SETUP.md)
+- Detailed instructions: See [LLM_SETUP.md](LLM_SETUP.md)
 
-**不配置 API key？** 系統會使用 mock 響應，適合測試。
+**No API key?** The system will use mock responses, suitable for testing.
 
 ### Adding Database Storage
 
@@ -219,4 +219,5 @@ MIT
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
+# chatbot
 # chatbot
