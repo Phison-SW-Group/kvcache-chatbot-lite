@@ -55,6 +55,9 @@ all start:
 	@echo ""
 	@echo "Press Ctrl+C to stop servers"
 	@echo ""
+	@echo "Creating necessary directories..."
+	@mkdir -p logs
+	@mkdir -p src/api/uploads
 	@echo "Starting backend in background..."
 	@cd src/api && python main.py > ../../logs/backend.log 2>&1 &
 	@echo "Waiting for backend to be ready..."
