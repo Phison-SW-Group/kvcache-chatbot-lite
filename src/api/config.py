@@ -27,7 +27,12 @@ class Settings(BaseSettings):
     LLM_BASE_URL: Optional[str] = None  # Optional: for Azure OpenAI or other compatible APIs
     LLM_TEMPERATURE: float = 0.7
     LLM_MAX_TOKENS: int = 2000
-    
+
+    LLM_SERVER_EXE: Optional[str] = None
+    LLM_SERVER_MODEL_NAME_OR_PATH: Optional[str] = None
+    LLM_SERVER_CACHE: Optional[str] = None
+    LLM_SERVER_LOG: Optional[str] = None
+
     class Config:
         env_file = ".env"
         case_sensitive = True

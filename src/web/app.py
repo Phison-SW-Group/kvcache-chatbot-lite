@@ -144,6 +144,38 @@ class ChatbotClient:
             pass
         self.session_id = str(uuid.uuid4())
 
+    def start_model_without_reset(self, model_name: str = None) -> dict:
+        """Start model without resetting configuration"""
+        payload = {"model_name": model_name} if model_name else {}
+        response = self.client.post(
+            f"{self.api_base_url}/model/up/without_reset",
+            json=payload
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def start_model_with_reset(self, model_name: str = None) -> dict:
+        """Start model with reset (restart with new configuration)"""
+        payload = {"model_name": model_name} if model_name else {}
+        response = self.client.post(
+            f"{self.api_base_url}/model/up/reset",
+            json=payload
+        )
+        response.raise_for_status()
+        return response.json()
+
+    def stop_model(self) -> dict:
+        """Stop the currently running model"""
+        response = self.client.post(f"{self.api_base_url}/model/down")
+        response.raise_for_status()
+        return response.json()
+
+    def get_model_status(self) -> dict:
+        """Get current model status"""
+        response = self.client.get(f"{self.api_base_url}/model/status")
+        response.raise_for_status()
+        return response.json()
+
 
 class ChatbotWeb:
 
@@ -244,6 +276,61 @@ class ChatbotWeb:
         return gr.Dropdown(choices=self.get_document_choices())
 
 
+    def restart_model(self) -> tuple:
+        """Restart model with new configuration"""
+        try:
+            result = self.client.start_model_with_reset()
+
+            # Format status message for model_status display
+            if result.get('status') == 'success':
+                status_msg = f"✅ {result['message']}"
+            else:
+                status_msg = f"❌ {result['message']}"
+
+            # Format detailed logging for deploy_log display
+            if result.get('status') == 'success':
+                log_msg = f"✅ {result['message']}\n"
+                log_msg += f"PID: {result.get('pid', 'N/A')}\n"
+                log_msg += f"Port: {result.get('port', 'N/A')}\n"
+                log_msg += f"Time: {result['timestamp']}\n"
+                if result.get('command'):
+                    log_msg += f"Command: {result['command']}\n"
+                return status_msg, log_msg
+            else:
+                # Handle error cases with detailed information
+                log_msg = f"❌ {result['message']}\n"
+
+                # Add details if available
+                if result.get('details'):
+                    details = result['details']
+                    log_msg += "\n📋 Details:\n"
+
+                    # Show specific error types
+                    if details.get('error_type'):
+                        log_msg += f"Error Type: {details['error_type']}\n"
+
+                    if details.get('exe_path'):
+                        log_msg += f"Executable: {details['exe_path']}\n"
+
+                    if details.get('model_path'):
+                        log_msg += f"Model: {details['model_path']}\n"
+
+                    if details.get('error_output'):
+                        log_msg += f"Error Output:\n{details['error_output']}\n"
+
+                    if details.get('command'):
+                        log_msg += f"Command: {details['command']}\n"
+
+                    if details.get('working_dir'):
+                        log_msg += f"Working Directory: {details['working_dir']}\n"
+
+                return status_msg, log_msg
+
+        except Exception as e:
+            error_msg = f"❌ Failed to restart model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
+            return error_msg, error_msg
+
+
     def create_web(self):
         # Create Gradio interface with simplified layout
         with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
@@ -307,22 +394,24 @@ class ChatbotWeb:
             with gr.Row():
                 # Left - Model controls
                 with gr.Column(scale=1):
-                    model_name = gr.Textbox(
-                        label="Model Name",
-                        placeholder="Enter model name (e.g., gemini-2.5-flash)",
-                        lines=1,
-                        interactive=True
-                    )
                     restart_btn = gr.Button("Restart Model", variant="primary", size="lg")
+                    model_status = gr.Textbox(
+                        label="Model Status",
+                        placeholder="Model status will appear here...",
+                        lines=2,
+                        interactive=False,
+                        show_label=True
+                    )
 
                 # Right - Deploy logging
                 with gr.Column(scale=3):
                     deploy_log = gr.Textbox(
                         label="Deploy Model Logging",
                         placeholder="Model logs will appear here...",
-                        lines=4,
+                        lines=8,
                         interactive=False,
-                        max_lines=10
+                        max_lines=20,
+                        show_copy_button=True
                     )
 
             # Event handlers
@@ -354,11 +443,11 @@ class ChatbotWeb:
                 outputs=[chatbot, upload_status]
             )
 
-            # Model control events (placeholder functions)
+            # Model control events
             restart_btn.click(
-                fn=lambda: "Model restart initiated... (Not implemented yet)",
+                fn=self.restart_model,
                 inputs=[],
-                outputs=[deploy_log]
+                outputs=[model_status, deploy_log]
             )
 
         return demo
