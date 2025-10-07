@@ -9,7 +9,7 @@ import json
 
 
 # Backend API configuration
-API_BASE_URL = "http://localhost:8000/api/v1"
+API_BASE_URL = "http://0.0.0.0:8000/api/v1"
 
 
 class ChatbotClient:
@@ -333,7 +333,7 @@ with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
 
 if __name__ == "__main__":
     print("Starting Gradio frontend...")
-    print("Make sure the backend API is running at http://localhost:8000")
+    print("Make sure the backend API is running at http://0.0.0.0:8000")
     demo.launch(
         server_name="0.0.0.0",
         server_port=7860,

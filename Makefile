@@ -40,7 +40,7 @@ backend:
 # Start frontend only
 frontend:
 	@echo "Starting frontend server..."
-	@echo "Make sure backend is running at http://localhost:8000"
+	@echo "Make sure backend is running at http://0.0.0.0:8000"
 	@cd src/web && python app.py
 
 # Start both services (with proper sequencing)
@@ -48,9 +48,9 @@ frontend:
 all start:
 	@echo "Starting KVCache Chatbot..."
 	@echo "========================================="
-	@echo "  Backend:  http://localhost:8000"
-	@echo "  Frontend: http://localhost:7860"
-	@echo "  API Docs: http://localhost:8000/docs"
+	@echo "  Backend:  http://0.0.0.0:8000"
+	@echo "  Frontend: http://0.0.0.0:7860"
+	@echo "  API Docs: http://0.0.0.0:8000/docs"
 	@echo "========================================="
 	@echo ""
 	@echo "Press Ctrl+C to stop servers"
@@ -61,7 +61,7 @@ all start:
 	@echo "Starting backend in background..."
 	@cd src/api && python main.py > ../../logs/backend.log 2>&1 &
 	@echo "Waiting for backend to be ready..."
-	@timeout 30 bash -c 'until curl -s http://localhost:8000/health > /dev/null; do sleep 1; done' || echo "Backend startup timeout"
+	@timeout 30 bash -c 'until curl -s http://0.0.0.0:8000/health > /dev/null; do sleep 1; done' || echo "Backend startup timeout"
 	@echo "Starting frontend..."
 	@cd src/web && python app.py
 
@@ -91,6 +91,6 @@ logs:
 test:
 	@echo "Running health checks..."
 	@echo "Checking backend health..."
-	@curl -s http://localhost:8000/health && echo "✅ Backend is healthy" || echo "❌ Backend is not responding"
+	@curl -s http://0.0.0.0:8000/health && echo "✅ Backend is healthy" || echo "❌ Backend is not responding"
 	@echo "Checking frontend accessibility..."
-	@curl -s http://localhost:7860 > /dev/null && echo "✅ Frontend is accessible" || echo "❌ Frontend is not accessible"
+	@curl -s http://0.0.0.0:7860 > /dev/null && echo "✅ Frontend is accessible" || echo "❌ Frontend is not accessible"
