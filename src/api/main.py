@@ -1,6 +1,8 @@
 """
 FastAPI main application
 """
+import argparse
+from dataclasses import dataclass
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
@@ -11,10 +13,33 @@ from services.session_service import session_manager
 from services.llm_service import llm_service
 
 
+@dataclass
+class ApiArgs:
+    ip     : str  = "0.0.0.0"
+    port   : int  = 8000
+    reload : bool = True
+
+    @classmethod
+    def from_args(cls):
+        parser = argparse.ArgumentParser()
+        parser.add_argument('-i', '--ip', default=cls.ip)
+        parser.add_argument('-p', '--port', type=int, default=cls.port)
+        parser.add_argument('--no-reload', action="store_true")
+
+        args = parser.parse_args()
+        return cls(
+            ip=args.ip,
+            port=args.port,
+            reload=not args.no_reload
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifecycle manager for startup and shutdown events"""
     # Startup
+    import os
+    os.makedirs("uploads", exist_ok=True)
     await session_manager.start_cleanup_task()
     
     # Initialize LLM service with config
@@ -84,10 +109,12 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+
+    args = ApiArgs.from_args()
     uvicorn.run(
         "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
+        host=args.ip,
+        port=args.port,
+        reload=args.reload
     )
 
