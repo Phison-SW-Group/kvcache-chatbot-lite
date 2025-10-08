@@ -640,7 +640,7 @@ class ChatbotWeb:
 
                     # Model controls section (moved back to left sidebar)
                     gr.Markdown("**Model Controls**")
-                    restart_btn = gr.Button("Restart Model", variant="primary", size="lg")
+                    restart_btn = gr.Button("Start Model with Reset", variant="primary", size="lg")
                     model_status = gr.Textbox(
                         label="Model Status",
                         placeholder="Model status...",
