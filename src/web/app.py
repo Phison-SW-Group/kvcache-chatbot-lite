@@ -57,6 +57,28 @@ class ChatbotClient:
             )
             response.raise_for_status()
             return response.json()
+    
+    def upload_document_and_cache(self, file_path: str) -> dict:
+        """
+        Upload a document and pre-cache it in KV Cache
+        
+        This function uploads a document and triggers KV Cache pre-warming:
+        1. Upload document
+        2. Run inference with document as system message (max_tokens=2)
+        3. Restart model server with reset=False to preserve KV Cache
+        
+        This enables prefix matching acceleration for subsequent queries.
+        """
+        with open(file_path, 'rb') as f:
+            files = {'file': f}
+            # Use longer timeout as this includes model restart
+            response = self.client.post(
+                f"{self.api_base_url}/documents/upload_and_cache",
+                files=files,
+                timeout=180.0  # 3 minutes to allow for model restart
+            )
+            response.raise_for_status()
+            return response.json()
 
     def list_documents(self) -> list:
         """Get list of all uploaded documents"""
@@ -268,6 +290,33 @@ class ChatbotWeb:
         except Exception as e:
             return f"❌ Upload failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices())
 
+    def upload_file_and_cache(self, file) -> Tuple[str, gr.Dropdown]:
+        """
+        Handle file upload with KV Cache pre-warming
+        
+        This function uploads a document and pre-caches it in the model's KV Cache
+        by running inference with the document content as system message.
+        This enables prefix matching acceleration for subsequent queries.
+
+        Args:
+            file: Uploaded file object
+
+        Returns:
+            Status message and updated dropdown
+        """
+        if file is None:
+            return "Please select a file to upload", gr.Dropdown(choices=self.get_document_choices())
+
+        try:
+            result = self.client.upload_document_and_cache(file.name)
+            msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes\n\n🚀 KV Cache is ready for prefix matching!"
+            # Refresh dropdown choices
+            return msg, gr.Dropdown(choices=self.get_document_choices())
+        except httpx.HTTPStatusError as e:
+            return f"❌ Upload and cache failed: {e.response.json().get('detail', str(e))}", gr.Dropdown(choices=self.get_document_choices())
+        except Exception as e:
+            return f"❌ Upload and cache failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices())
+
 
     def clear_chat(self) -> Tuple[List, str, gr.Dropdown]:
         """Clear chat history and reset session"""
@@ -370,12 +419,14 @@ class ChatbotWeb:
                         type="filepath",
                         height=150
                     )
-                    upload_btn = gr.Button("Upload", variant="primary", size="lg")
+                    with gr.Row():
+                        upload_btn = gr.Button("Upload", variant="primary", size="sm")
+                        upload_cache_btn = gr.Button("Upload & Cache", variant="secondary", size="sm")
                     upload_status = gr.Textbox(
                         label="",
                         placeholder="Upload status will appear here...",
                         interactive=False,
-                        lines=2,
+                        lines=3,
                         show_label=False
                     )
 
@@ -446,6 +497,12 @@ class ChatbotWeb:
             # Upload events
             upload_btn.click(
                 fn=self.upload_file,
+                inputs=[file_upload],
+                outputs=[upload_status, doc_dropdown]
+            )
+            
+            upload_cache_btn.click(
+                fn=self.upload_file_and_cache,
                 inputs=[file_upload],
                 outputs=[upload_status, doc_dropdown]
             )

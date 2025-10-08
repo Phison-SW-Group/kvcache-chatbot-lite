@@ -350,7 +350,8 @@ class ModelServer:
             # Start server process - exactly like start_llama_non_reuse.py
             popen_kwargs = dict(cwd=str(working_dir))
             if sys.platform == "win32":
-                # Start in a new process group so we can later send CTRL_BREAK
+                # Create new process group to isolate from parent console
+                # This prevents accidental signal propagation but requires special handling for shutdown
                 popen_kwargs.update(creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
 
             # Don't capture stdout/stderr to avoid pipe buffer blocking
@@ -462,18 +463,29 @@ class ModelServer:
                 self.logger.info(f"Stopping server process (PID: {self.process.pid})")
 
                 if sys.platform == "win32":
-                    # Windows: Send CTRL_BREAK_EVENT to process group
-                    self.process.send_signal(signal.CTRL_BREAK_EVENT)
+                    # Windows: Send CTRL_C_EVENT for graceful shutdown
+                    # This should trigger llama-server to save prefix_tree.bin
+                    try:
+                        self.logger.info("Sending CTRL_C_EVENT for graceful shutdown...")
+                        os.kill(self.process.pid, signal.CTRL_C_EVENT)
+                    except Exception as e:
+                        # If CTRL_C fails, try CTRL_BREAK as fallback
+                        self.logger.warning(f"CTRL_C_EVENT failed: {e}, trying CTRL_BREAK_EVENT")
+                        self.process.send_signal(signal.CTRL_BREAK_EVENT)
                 else:
                     # Unix/Linux: Send SIGTERM to process group
                     os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
 
-                # Wait for process to terminate
+                # Wait for process to terminate (allow time for cache saving)
                 try:
-                    self.process.wait(timeout=10)
+                    self.logger.info("Waiting for server to gracefully shutdown (saving KV cache)...")
+                    # Flushing KV cache to SSD can take time, especially for large caches
+                    self.process.wait(timeout=60)  # Give enough time for "Flushing KV cache to SSD"
+                    self.logger.info("Server shut down gracefully")
                 except subprocess.TimeoutExpired:
                     # Force kill if graceful shutdown failed
-                    self.logger.warning("Graceful shutdown failed, force killing process")
+                    self.logger.warning("Graceful shutdown timeout (60s), force killing process")
+                    self.logger.warning("This may prevent prefix_tree.bin from being saved")
                     if sys.platform == "win32":
                         self.process.kill()
                     else:

@@ -12,6 +12,8 @@ from models import DocumentUploadResponse, DocumentInfo
 from config import settings
 from services.document_manager import document_manager
 from services.document_service import document_service
+from services.llm_service import llm_service
+from services.model import model_server
 
 
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -116,4 +118,111 @@ async def delete_document(doc_id: str):
         raise HTTPException(status_code=404, detail="Document not found")
     
     return {"message": "Document deleted successfully"}
+
+
+@router.post("/upload_and_cache", response_model=DocumentUploadResponse)
+async def upload_document_and_cache(file: UploadFile = File(...)):
+    """
+    Upload a document and pre-cache it in KV Cache
+    
+    This endpoint performs two steps:
+    1. Upload and process the document (same as /upload)
+    2. Run inference with document content as system message (max_tokens=2)
+       - This populates the KV Cache in memory
+       - The cache is immediately available for subsequent queries
+       - Prefix matching will accelerate future requests with the same document
+    
+    No server restart is needed - the cache remains in memory and is ready for use.
+    """
+    # Step 1: Upload document (reuse existing logic)
+    # Validate file extension
+    file_extension = Path(file.filename).suffix.lower()
+    
+    if file_extension not in settings.ALLOWED_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type: {file_extension}. "
+                   f"Allowed types: {', '.join(settings.ALLOWED_EXTENSIONS)}"
+        )
+    
+    # Check file size
+    file_content = await file.read()
+    file_size = len(file_content)
+    
+    if file_size > settings.MAX_FILE_SIZE:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE / (1024*1024):.1f}MB"
+        )
+    
+    # Generate unique filename
+    import uuid
+    unique_id = str(uuid.uuid4())[:8]
+    safe_filename = f"{unique_id}_{file.filename}"
+    file_path = Path(settings.UPLOAD_DIR) / safe_filename
+    
+    try:
+        # Save file
+        async with aiofiles.open(file_path, 'wb') as f:
+            await f.write(file_content)
+        
+        # Process document to extract text
+        document_content = await document_service.process_document(file_path)
+        
+        # Store in document manager
+        doc_id = document_manager.add_document(
+            filename=file.filename,
+            file_size=file_size,
+            file_path=file_path,
+            content=document_content
+        )
+        
+        # Step 2: Pre-cache document content via inference
+        # Prepare messages with only system role containing document content
+        messages = [
+            {
+                "role": "system",
+                "content": document_content
+            }
+        ]
+        
+        # Run inference with max_tokens=2 (we only care about caching the prefix)
+        # Temporarily override max_tokens
+        original_max_tokens = llm_service.max_tokens
+        llm_service.max_tokens = 2
+        
+        try:
+            # Run inference to populate KV Cache
+            async for _ in llm_service.generate_response(messages, stream=False):
+                pass  # We don't care about the response, just caching
+        finally:
+            # Restore original max_tokens
+            llm_service.max_tokens = original_max_tokens
+        
+        # Step 3: KV Cache is now populated and ready for use
+        # No need to restart - the cache is already in memory and will be reused
+        # for subsequent queries with the same document prefix
+        # 
+        # Note: The model server uses --kv-cache-resume-policy based on its startup mode:
+        # - If started with reset=True: cache is fresh for this session
+        # - If started with reset=False: cache is loaded from previous sessions
+        # Either way, the cache from Step 2 is now available for prefix matching
+
+        return DocumentUploadResponse(
+            doc_id=doc_id,
+            filename=file.filename,
+            file_size=file_size,
+            message=f"Document '{file.filename}' uploaded and cached successfully. KV Cache ready for prefix matching."
+        )
+    
+    except ValueError as e:
+        # Clean up file on error
+        if file_path.exists():
+            file_path.unlink()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        # Clean up file on error
+        if file_path.exists():
+            file_path.unlink()
+        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
