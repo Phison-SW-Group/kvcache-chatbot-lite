@@ -591,6 +591,33 @@ class ChatbotWeb:
             error_msg = f"❌ Failed to restart model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
             yield error_msg, error_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
 
+    def stop_model(self) -> Tuple[str, str]:
+        """
+        Stop the currently running model
+        
+        Returns:
+            Status message and model logs
+        """
+        try:
+            result = self.client.stop_model()
+            
+            # Format status message
+            if result.get('status') == 'success':
+                status_msg = f"✅ {result['message']}"
+            else:
+                status_msg = f"❌ {result['message']}"
+            
+            # Fetch and display logs after stop operation
+            import time
+            time.sleep(0.5)
+            filtered_logs = self.fetch_model_logs()
+            
+            return status_msg, filtered_logs
+            
+        except Exception as e:
+            error_msg = f"❌ Failed to stop model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
+            return error_msg, ""
+
 
     def create_web(self):
         # Create Gradio interface with simplified layout
@@ -640,11 +667,12 @@ class ChatbotWeb:
 
                     # Model controls section (moved back to left sidebar)
                     gr.Markdown("**Model Controls**")
-                    restart_btn = gr.Button("Start Model with Reset", variant="primary", size="lg")
+                    restart_btn = gr.Button("Start Model with Reset", variant="primary", size="sm")
+                    down_btn = gr.Button("Stop Model", variant="secondary", size="sm")
                     model_status = gr.Textbox(
                         label="Model Status",
                         placeholder="Model status...",
-                        lines=1,
+                        lines=3,
                         interactive=False,
                         show_label=False
                     )
@@ -744,6 +772,12 @@ class ChatbotWeb:
                 fn=self.restart_model,
                 inputs=[],
                 outputs=[model_status, deploy_log, doc_dropdown]
+            )
+            
+            down_btn.click(
+                fn=self.stop_model,
+                inputs=[],
+                outputs=[model_status, deploy_log]
             )
             
             # Log refresh event
