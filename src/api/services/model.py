@@ -231,26 +231,74 @@ class ModelServer:
         except Exception:
             return False
 
+    def _is_completion_ready(self) -> bool:
+        """Check if chat/completions endpoint is ready (not returning 503)."""
+        import json
+
+        url = f"http://localhost:{self.config.port}/v1/chat/completions"
+
+        # Prepare a simple test request
+        test_payload = {
+            "model": "test",
+            "messages": [{"role": "user", "content": "hi"}],
+            "max_tokens": 2
+        }
+
+        try:
+            req = urllib.request.Request(
+                url,
+                data=json.dumps(test_payload).encode('utf-8'),
+                headers={'Content-Type': 'application/json'}
+            )
+
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                # Any 2xx response means the model is ready
+                return 200 <= resp.status < 300
+
+        except urllib.error.HTTPError as e:
+            # 503 means model is still loading
+            if e.code == 503:
+                try:
+                    error_data = json.loads(e.read().decode('utf-8'))
+                    if error_data.get('error', {}).get('message') == 'Loading model':
+                        self.logger.debug("Model still loading (503)...")
+                        return False
+                except:
+                    pass
+            # Other HTTP errors might indicate the model is ready but request is invalid
+            # (which is fine for our test purposes)
+            return False
+        except urllib.error.URLError:
+            return False
+        except Exception as e:
+            self.logger.debug(f"Completion check error: {e}")
+            return False
+
     def _wait_until_ready(self, timeout_seconds: int = 90) -> bool:
-        """Poll the HTTP endpoint until it is ready or timeout."""
+        """Poll the chat/completions endpoint until it is ready or timeout."""
         start = time.time()
-        # Initial short backoff while the binary loads the model
+        # Poll every 0.5 seconds as requested
         interval = 0.5
         try:
             while time.time() - start < timeout_seconds:
                 if not self._is_running():
+                    self.logger.warning("Process stopped while waiting for model to load")
                     return False
-                if self._is_http_ready():
+
+                # Check if completion endpoint is ready
+                if self._is_completion_ready():
+                    elapsed = time.time() - start
+                    self.logger.info(f"Model ready after {elapsed:.1f} seconds")
                     return True
+
                 time.sleep(interval)
-                # Gradually increase interval up to 2s
-                if interval < 2.0:
-                    interval = min(2.0, interval + 0.25)
+
+            self.logger.warning(f"Model loading timeout after {timeout_seconds} seconds")
             return False
         except KeyboardInterrupt:
             self.logger.info("Startup interrupted by user")
             return False
-    
+
     def up(self, reset: bool = True) -> Dict[str, Any]:
         """
         Start the model server
@@ -318,15 +366,7 @@ class ModelServer:
             time.sleep(0.5)
 
             # Check if process is still running (didn't immediately crash)
-            if self.process.poll() is None:
-                return {
-                    "status": self.status.SUCCESS,
-                    "message": f"Model server started successfully (reset={reset})",
-                    "pid": self.process.pid,
-                    "port": self.config.port,
-                    "command": " ".join(args)
-                }
-            else:
+            if self.process.poll() is not None:
                 # Process terminated immediately
                 return {
                     "status": self.status.ERROR,
@@ -338,6 +378,41 @@ class ModelServer:
                         "hint": "Check log file for error details"
                     }
                 }
+
+            # Process is running, now wait for model to fully load
+            self.logger.info("Server process started, waiting for model to load...")
+
+            if self._wait_until_ready(timeout_seconds=90):
+                return {
+                    "status": self.status.SUCCESS,
+                    "message": f"Model server started and ready (reset={reset})",
+                    "pid": self.process.pid,
+                    "port": self.config.port,
+                    "command": " ".join(args)
+                }
+            else:
+                # Timeout or process died while loading
+                if self.process.poll() is not None:
+                    return {
+                        "status": self.status.ERROR,
+                        "message": "Server process terminated while loading model",
+                        "details": {
+                            "command": " ".join(args),
+                            "log_file": str(log_path),
+                            "hint": "Check log file for error details"
+                        }
+                    }
+                else:
+                    return {
+                        "status": self.status.ERROR,
+                        "message": "Model loading timeout - server running but model not ready",
+                        "details": {
+                            "pid": self.process.pid,
+                            "port": self.config.port,
+                            "log_file": str(log_path),
+                            "hint": "Model may still be loading. Check log file or try again later."
+                        }
+                    }
                 
         except FileNotFoundError as e:
             return {

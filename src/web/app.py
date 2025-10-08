@@ -280,8 +280,13 @@ class ChatbotWeb:
         return gr.Dropdown(choices=self.get_document_choices())
 
 
-    def restart_model(self) -> tuple:
-        """Restart model with new configuration"""
+    def restart_model(self) -> Generator[tuple, None, None]:
+        """Restart model with new configuration (with loading status updates)"""
+        # Initial loading message
+        loading_status = "🔄 Starting model server..."
+        loading_log = "🔄 Restarting model server...\n⏳ This may take 30-90 seconds while the model loads...\n"
+        yield loading_status, loading_log
+
         try:
             result = self.client.start_model_with_reset()
 
@@ -299,7 +304,7 @@ class ChatbotWeb:
                 log_msg += f"Time: {result['timestamp']}\n"
                 if result.get('command'):
                     log_msg += f"Command: {result['command']}\n"
-                return status_msg, log_msg
+                yield status_msg, log_msg
             else:
                 # Handle error cases with detailed information
                 log_msg = f"❌ {result['message']}\n"
@@ -328,11 +333,17 @@ class ChatbotWeb:
                     if details.get('working_dir'):
                         log_msg += f"Working Directory: {details['working_dir']}\n"
 
-                return status_msg, log_msg
+                    if details.get('log_file'):
+                        log_msg += f"Log File: {details['log_file']}\n"
+
+                    if details.get('hint'):
+                        log_msg += f"💡 Hint: {details['hint']}\n"
+
+                yield status_msg, log_msg
 
         except Exception as e:
             error_msg = f"❌ Failed to restart model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
-            return error_msg, error_msg
+            yield error_msg, error_msg
 
 
     def create_web(self):
