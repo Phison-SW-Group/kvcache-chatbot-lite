@@ -23,14 +23,28 @@ class DocumentMetadata:
         self.uploaded_at = uploaded_at if uploaded_at else datetime.now()
         self.content: Optional[str] = None
     
-    def to_dict(self) -> dict:
-        """Convert to dictionary format (for API response)"""
-        return {
+    def to_dict(self, include_preview: bool = False, preview_lines: int = 10) -> dict:
+        """
+        Convert to dictionary format (for API response)
+        
+        Args:
+            include_preview: Whether to include content preview
+            preview_lines: Number of lines to include in preview
+        """
+        result = {
             "doc_id": self.doc_id,
             "filename": self.filename,
             "file_size": self.file_size,
             "uploaded_at": self.uploaded_at.isoformat()
         }
+        
+        if include_preview and self.content:
+            lines = self.content.split('\n')
+            preview_text = '\n'.join(lines[:preview_lines])
+            result["content_preview"] = preview_text
+            result["total_lines"] = len(lines)
+        
+        return result
     
     def to_persistent_dict(self) -> dict:
         """Convert to dictionary format for persistence (includes file_path)"""

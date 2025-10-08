@@ -92,6 +92,12 @@ class ChatbotClient:
         response.raise_for_status()
         return response.json()
     
+    def get_document_info(self, doc_id: str) -> dict:
+        """Get document information including metadata"""
+        response = self.client.get(f"{self.api_base_url}/documents/{doc_id}")
+        response.raise_for_status()
+        return response.json()
+    
     def send_message(self, message: str, document_id: Optional[str] = None) -> str:
         """Send a message and get response (non-streaming)"""
         payload = {
@@ -328,6 +334,53 @@ class ChatbotWeb:
     def refresh_documents(self) -> gr.Dropdown:
         """Refresh document list"""
         return gr.Dropdown(choices=self.get_document_choices())
+    
+    def on_document_select(self, selected_doc: str, history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
+        """
+        Handle document selection from dropdown
+        
+        Args:
+            selected_doc: Selected document ID
+            history: Current chat history
+        
+        Returns:
+            Updated history with system message (or cleared history)
+        """
+        # Remove previous document selection message if exists
+        # Check if the last message is a document selection system message
+        if history and len(history) > 0:
+            last_user_msg, last_bot_msg = history[-1]
+            # System messages have empty user message and contain "Document Selected"
+            if last_user_msg == "" and "📄 **Document Selected:**" in last_bot_msg:
+                history = history[:-1]  # Remove the last system message
+        
+        # If no document selected, just return history without adding any message
+        if not selected_doc or selected_doc == "None":
+            return history
+        
+        try:
+            # Get document info with preview
+            doc_info = self.client.get_document_info(selected_doc)
+            
+            # Add system message to chatbot
+            system_msg = f"📄 **Document Selected:** {doc_info['filename']}\n"
+            system_msg += f"📊 Size: {doc_info['file_size']} bytes"
+            if doc_info.get('total_lines'):
+                system_msg += f" | Lines: {doc_info['total_lines']}"
+            
+            if doc_info.get('content_preview'):
+                system_msg += f"\n\n**Preview:**\n```\n{doc_info['content_preview']}\n```"
+                if doc_info.get('total_lines', 0) > 10:
+                    system_msg += "\n_(showing first 10 lines)_"
+            
+            # Insert system message at the end of history
+            new_history = history + [("", system_msg)]
+            
+            return new_history
+            
+        except Exception as e:
+            error_msg = f"❌ Error loading document: {str(e)}"
+            return history + [("", error_msg)]
 
     def on_page_load(self) -> Tuple[List, str, gr.Dropdown]:
         """Handle page load/refresh - create new session and refresh document list"""
@@ -512,6 +565,13 @@ class ChatbotWeb:
                 fn=self.refresh_documents,
                 inputs=[],
                 outputs=[doc_dropdown]
+            )
+            
+            # Document selection event - show system message in chatbot
+            doc_dropdown.change(
+                fn=self.on_document_select,
+                inputs=[doc_dropdown, chatbot],
+                outputs=[chatbot]
             )
 
             # Clear chat - handle both Clear button and Chatbot's built-in clear button

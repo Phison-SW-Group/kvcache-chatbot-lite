@@ -98,15 +98,21 @@ async def list_documents():
     return documents
 
 
-@router.get("/{doc_id}", response_model=DocumentInfo)
-async def get_document_info(doc_id: str):
-    """Get information about a specific document"""
+@router.get("/{doc_id}")
+async def get_document_info(doc_id: str, include_preview: bool = True):
+    """
+    Get information about a specific document
+    
+    Args:
+        doc_id: Document ID
+        include_preview: Whether to include content preview (default: True)
+    """
     doc = document_manager.get_document(doc_id)
     
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     
-    return doc.to_dict()
+    return doc.to_dict(include_preview=include_preview, preview_lines=10)
 
 
 @router.delete("/{doc_id}")
