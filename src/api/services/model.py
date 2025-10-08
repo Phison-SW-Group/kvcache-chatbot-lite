@@ -8,6 +8,7 @@ import subprocess
 import signal
 import time
 import psutil
+import threading
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
@@ -62,6 +63,41 @@ class ModelServer:
         self.process: Optional[subprocess.Popen] = None
         self.logger = logging.getLogger(__name__)
         self.status = ModelServerStatus()
+        self.custom_log_path: Optional[str] = None  # Allow dynamic log path override
+        self.log_threads: list = []  # Keep track of log streaming threads
+    
+    def set_log_path(self, log_path: str):
+        """
+        Set custom log path for model server
+        
+        Args:
+            log_path: Custom path for model server logs
+        """
+        self.custom_log_path = log_path
+        self.logger.info(f"Custom log path set to: {log_path}")
+    
+    def _stream_output_to_log(self, stream, stream_name: str, log_file_path: str):
+        """
+        Stream subprocess output to both console and log file
+        
+        Args:
+            stream: stdout or stderr stream
+            stream_name: Name of the stream for logging
+            log_file_path: Path to log file
+        """
+        try:
+            with open(log_file_path, 'a', encoding='utf-8') as log_file:
+                for line in iter(stream.readline, b''):
+                    if line:
+                        decoded_line = line.decode('utf-8', errors='replace')
+                        # Write to console (terminal)
+                        sys.stdout.write(decoded_line)
+                        sys.stdout.flush()
+                        # Write to log file
+                        log_file.write(decoded_line)
+                        log_file.flush()
+        except Exception as e:
+            self.logger.error(f"Error streaming {stream_name}: {e}")
 
     # # TODO: Deprecated method - use _validate_paths_detailed() instead
     # def _validate_paths(self) -> bool:
@@ -186,7 +222,6 @@ class ModelServer:
             "-mg", "0",
             "--offload-path", str(self.config.cache_path),
             "--ssd-kv-offload-gb", str(self.config.offload_gb),
-            "--log-file", str(self.config.log_path),
             "--parallel", "1",
             "--no-context-shift",
             "--kv-cache-resume-policy", "0" if reset else "1",
@@ -310,9 +345,13 @@ class ModelServer:
             Dict with status and message
         """
         try:
+            from services.model_log import model_log_service
+            model_log_service.append_log(f"Starting model server (reset={reset})...")
+            
             # Validate configuration with detailed error messages
             validation_result = self._validate_paths_detailed()
             if not validation_result["valid"]:
+                model_log_service.append_log(f"Validation failed: {validation_result['message']}")
                 return {
                     "status": "error",
                     "message": validation_result["message"],
@@ -346,22 +385,50 @@ class ModelServer:
 
             self.logger.info(f"Starting server with args: {' '.join(args)}")
             self.logger.info(f"Working directory: {working_dir}")
+            
+            model_log_service.append_log(f"Server command: {' '.join(args)}")
+            model_log_service.append_log(f"Working directory: {working_dir}")
 
-            # Start server process - exactly like start_llama_non_reuse.py
-            popen_kwargs = dict(cwd=str(working_dir))
+            # Start server process with stdout/stderr capture
+            popen_kwargs = dict(
+                cwd=str(working_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1  # Line buffered
+            )
+            
             if sys.platform == "win32":
                 # Create new process group to isolate from parent console
-                # This prevents accidental signal propagation but requires special handling for shutdown
                 popen_kwargs.update(creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
 
-            # Don't capture stdout/stderr to avoid pipe buffer blocking
-            # llama-server logs are written to --log-file anyway
+            # Start process with stdout/stderr capture
             self.process = subprocess.Popen(
                 args,
                 **popen_kwargs
             )
 
             self.logger.info(f"llama-server started. PID={self.process.pid}")
+            model_log_service.append_log(f"llama-server process started. PID={self.process.pid}")
+            
+            # Start threads to stream stdout and stderr to log file
+            # Use the custom log path for capturing server output
+            current_log_path = self.custom_log_path if self.custom_log_path else str(log_path)
+            
+            stdout_thread = threading.Thread(
+                target=self._stream_output_to_log,
+                args=(self.process.stdout, "stdout", current_log_path),
+                daemon=True
+            )
+            stderr_thread = threading.Thread(
+                target=self._stream_output_to_log,
+                args=(self.process.stderr, "stderr", current_log_path),
+                daemon=True
+            )
+            
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            self.log_threads = [stdout_thread, stderr_thread]
 
             # Wait a brief moment to check if process started successfully
             time.sleep(0.5)
@@ -369,21 +436,25 @@ class ModelServer:
             # Check if process is still running (didn't immediately crash)
             if self.process.poll() is not None:
                 # Process terminated immediately
+                error_msg = "Server process terminated immediately after start"
+                model_log_service.append_log(f"ERROR: {error_msg}")
                 return {
                     "status": self.status.ERROR,
-                    "message": "Server process terminated immediately after start",
+                    "message": error_msg,
                     "details": {
                         "command": " ".join(args),
                         "working_dir": str(working_dir),
-                        "log_file": str(log_path),
+                        "log_file": current_log_path,
                         "hint": "Check log file for error details"
                     }
                 }
 
             # Process is running, now wait for model to fully load
             self.logger.info("Server process started, waiting for model to load...")
+            model_log_service.append_log("Waiting for model to load...")
 
             if self._wait_until_ready(timeout_seconds=90):
+                model_log_service.append_log(f"✅ Model server started and ready (PID={self.process.pid}, Port={self.config.port})")
                 return {
                     "status": self.status.SUCCESS,
                     "message": f"Model server started and ready (reset={reset})",
@@ -394,40 +465,48 @@ class ModelServer:
             else:
                 # Timeout or process died while loading
                 if self.process.poll() is not None:
+                    error_msg = "Server process terminated while loading model"
+                    model_log_service.append_log(f"ERROR: {error_msg}")
                     return {
                         "status": self.status.ERROR,
-                        "message": "Server process terminated while loading model",
+                        "message": error_msg,
                         "details": {
                             "command": " ".join(args),
-                            "log_file": str(log_path),
+                            "log_file": current_log_path,
                             "hint": "Check log file for error details"
                         }
                     }
                 else:
+                    error_msg = "Model loading timeout - server running but model not ready"
+                    model_log_service.append_log(f"ERROR: {error_msg}")
                     return {
                         "status": self.status.ERROR,
-                        "message": "Model loading timeout - server running but model not ready",
+                        "message": error_msg,
                         "details": {
                             "pid": self.process.pid,
                             "port": self.config.port,
-                            "log_file": str(log_path),
+                            "log_file": current_log_path,
                             "hint": "Model may still be loading. Check log file or try again later."
                         }
                     }
                 
         except FileNotFoundError as e:
+            error_msg = f"Executable not found: {str(e)}"
+            model_log_service.append_log(f"ERROR: {error_msg}")
             return {
                 "status": self.status.ERROR,
-                "message": f"Executable not found: {str(e)}",
+                "message": error_msg,
                 "details": {
                     "exe_path": self.config.exe,
                     "error_type": "FileNotFoundError"
                 }
             }
         except PermissionError as e:
+            error_msg = f"Permission denied: {str(e)}"
+            model_log_service.append_log(f"ERROR: {error_msg}")
             return {
                 "status": self.status.ERROR,
-                "message": f"Permission denied: {str(e)}",
+                "message": error_msg,
                 "details": {
                     "exe_path": self.config.exe,
                     "error_type": "PermissionError"
@@ -435,9 +514,11 @@ class ModelServer:
             }
         except Exception as e:
             self.logger.error(f"Error starting server: {e}")
+            error_msg = f"Failed to start server: {str(e)}"
+            model_log_service.append_log(f"ERROR: {error_msg}")
             return {
                 "status": self.status.ERROR,
-                "message": f"Failed to start server: {str(e)}",
+                "message": error_msg,
                 "details": {
                     "error_type": type(e).__name__,
                     "command": " ".join(args)
@@ -452,7 +533,11 @@ class ModelServer:
             Dict with status and message
         """
         try:
+            from services.model_log import model_log_service
+            model_log_service.append_log("Stopping model server...")
+            
             if not self._is_running():
+                model_log_service.append_log("Server was not running")
                 return {
                     "status": self.status.SUCCESS,
                     "message": "Server was not running"
@@ -461,6 +546,7 @@ class ModelServer:
             # If we have process reference, use it
             if self.process is not None and self.process.poll() is None:
                 self.logger.info(f"Stopping server process (PID: {self.process.pid})")
+                model_log_service.append_log(f"Stopping server process (PID: {self.process.pid})")
 
                 if sys.platform == "win32":
                     # Windows: Send CTRL_C_EVENT for graceful shutdown
@@ -480,13 +566,17 @@ class ModelServer:
                 _timeout = 30
                 try:
                     self.logger.info("Waiting for server to gracefully shutdown (saving KV cache)...")
+                    model_log_service.append_log("Waiting for server to gracefully shutdown (saving KV cache)...")
                     # Flushing KV cache to SSD can take time, especially for large caches
                     self.process.wait(timeout=_timeout)  # Give enough time for "Flushing KV cache to SSD"
                     self.logger.info("Server shut down gracefully")
+                    model_log_service.append_log("✅ Server shut down gracefully")
                 except subprocess.TimeoutExpired:
                     # Force kill if graceful shutdown failed
                     self.logger.warning(f"Graceful shutdown timeout ({_timeout}s), force killing process")
                     self.logger.warning("This may prevent prefix_tree.bin from being saved")
+                    model_log_service.append_log(f"⚠️ Graceful shutdown timeout ({_timeout}s), force killing process")
+                    model_log_service.append_log("⚠️ This may prevent prefix_tree.bin from being saved")
                     if sys.platform == "win32":
                         self.process.kill()
                     else:
@@ -521,6 +611,7 @@ class ModelServer:
                         "message": f"Could not find server process on port {self.config.port}"
                     }
             
+            model_log_service.append_log("✅ Server stopped successfully")
             return {
                 "status": self.status.SUCCESS,
                 "message": "Server stopped successfully"
@@ -528,9 +619,11 @@ class ModelServer:
             
         except Exception as e:
             self.logger.error(f"Error stopping server: {e}")
+            error_msg = f"Failed to stop server: {str(e)}"
+            model_log_service.append_log(f"ERROR: {error_msg}")
             return {
                 "status": self.status.ERROR,
-                "message": f"Failed to stop server: {str(e)}"
+                "message": error_msg
             }
     
     def get_status(self) -> Dict[str, Any]:

@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 from config import settings
-from routers import session, upload, document, model
+from routers import session, upload, document, model, logs
 from services.session_service import session_manager
 from services.llm_service import llm_service
 
@@ -42,6 +42,16 @@ async def lifespan(app: FastAPI):
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     await session_manager.start_cleanup_task()
     
+    # Create model log session with unique ID
+    from services.model_log import model_log_service
+    log_session = model_log_service.create_session()
+    print(f"📝 Model log session created: {log_session.session_id}")
+    print(f"   Log file: {log_session.log_file_path}")
+    
+    # Configure model server to use unique log file
+    from services.model import model_server
+    model_server.set_log_path(log_session.log_file_path)
+    
     # Initialize LLM service with config
     if settings.LLM_API_KEY:
         llm_service.__init__(
@@ -54,8 +64,12 @@ async def lifespan(app: FastAPI):
         print(f"✅ LLM service initialized with model: {settings.LLM_MODEL}")
         print(f"   Base URL: {settings.LLM_BASE_URL}")
         print(f"   API Key: {'***' if settings.LLM_API_KEY else 'None'}")
+        
+        # Log LLM initialization
+        model_log_service.append_log(f"LLM service initialized - Model: {settings.LLM_MODEL}, Base URL: {settings.LLM_BASE_URL}")
     else:
         print("⚠️  No LLM API key provided, using mock responses")
+        model_log_service.append_log("LLM service initialized - Using mock responses (no API key)")
     
     yield
     
@@ -63,11 +77,12 @@ async def lifespan(app: FastAPI):
     await session_manager.stop_cleanup_task()
 
     # Stop model server if running
-    from services.model import model_server
     if model_server._is_running():
         print("🛑 Stopping model server...")
+        model_log_service.append_log("Shutting down model server...")
         model_server.down()
         print("✅ Model server stopped")
+        model_log_service.append_log("Model server stopped successfully")
 
 
 # Create FastAPI app
@@ -91,6 +106,7 @@ app.include_router(session.router, prefix=settings.API_PREFIX)
 app.include_router(upload.router, prefix=settings.API_PREFIX)  # Legacy
 app.include_router(document.router, prefix=settings.API_PREFIX)  # New independent documents
 app.include_router(model.router, prefix=settings.API_PREFIX)  # Model deployment
+app.include_router(logs.router, prefix=settings.API_PREFIX)  # Model logs
 
 
 @app.get("/")
@@ -105,7 +121,10 @@ async def root():
             "messages": f"{settings.API_PREFIX}/session/{{session_id}}/messages",
             "documents": f"{settings.API_PREFIX}/documents",
             "upload_document": f"{settings.API_PREFIX}/documents/upload",
-            "model": f"{settings.API_PREFIX}/model"
+            "model": f"{settings.API_PREFIX}/model",
+            "logs": f"{settings.API_PREFIX}/logs/current",
+            "logs_recent": f"{settings.API_PREFIX}/logs/recent",
+            "logs_sessions": f"{settings.API_PREFIX}/logs/sessions"
         }
     }
 

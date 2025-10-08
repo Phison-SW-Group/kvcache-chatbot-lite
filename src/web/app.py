@@ -207,6 +207,28 @@ class ChatbotClient:
         response = self.client.get(f"{self.api_base_url}/model/status")
         response.raise_for_status()
         return response.json()
+    
+    def get_model_logs(self, lines: int = 100, pattern: Optional[str] = None) -> dict:
+        """
+        Get model server logs with optional pattern filtering
+        
+        Args:
+            lines: Number of recent lines to retrieve
+            pattern: Regex pattern to filter logs
+            
+        Returns:
+            Dict with log information
+        """
+        params = {"lines": lines}
+        if pattern:
+            params["pattern"] = pattern
+        
+        response = self.client.get(
+            f"{self.api_base_url}/logs/server",
+            params=params
+        )
+        response.raise_for_status()
+        return response.json()
 
 
 class ChatbotWeb:
@@ -220,7 +242,7 @@ class ChatbotWeb:
         message: str,
         history: List[Tuple[str, str]],
         selected_doc: Optional[str]
-    ) -> Generator[Tuple[List[Tuple[str, str]], str], None, None]:
+    ) -> Generator[Tuple[List[Tuple[str, str]], str, str], None, None]:
         """
         Handle chat interaction
         
@@ -230,15 +252,15 @@ class ChatbotWeb:
             selected_doc: Selected document ID (None if no document selected)
 
         Yields:
-            Updated history and empty message box
+            Updated history, empty message box, and updated logs
         """
         if not message.strip():
-            yield history, ""
+            yield history, "", ""
             return
 
         # Add user message to history
         history.append((message, ""))
-        yield history, ""
+        yield history, "", ""
 
         # Parse document ID from dropdown value
         doc_id = None
@@ -251,11 +273,18 @@ class ChatbotWeb:
             for chunk in self.client.stream_message(message, doc_id):
                 full_response += chunk
                 history[-1] = (message, full_response)
-                yield history, ""
+                yield history, "", ""
+            
+            # After response is complete, fetch and display new logs
+            import time
+            time.sleep(0.5)  # Wait for logs to be written
+            filtered_logs = self.fetch_model_logs()
+            yield history, "", filtered_logs
+            
         except Exception as e:
             error_msg = f"Error: {str(e)}. Please make sure the backend server is running."
             history[-1] = (message, error_msg)
-            yield history, ""
+            yield history, "", ""
 
 
     def get_document_choices(self) -> List[Tuple[str, str]]:
@@ -296,7 +325,7 @@ class ChatbotWeb:
         except Exception as e:
             return f"❌ Upload failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices())
 
-    def upload_file_and_cache(self, file) -> Tuple[str, gr.Dropdown]:
+    def upload_file_and_cache(self, file) -> Tuple[str, gr.Dropdown, str]:
         """
         Handle file upload with KV Cache pre-warming
         
@@ -308,20 +337,26 @@ class ChatbotWeb:
             file: Uploaded file object
 
         Returns:
-            Status message and updated dropdown
+            Status message, updated dropdown, and model logs
         """
         if file is None:
-            return "Please select a file to upload", gr.Dropdown(choices=self.get_document_choices())
+            return "Please select a file to upload", gr.Dropdown(choices=self.get_document_choices()), ""
 
         try:
             result = self.client.upload_document_and_cache(file.name)
             msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes\n\n🚀 KV Cache is ready for prefix matching!"
+            
+            # Fetch and display new logs after cache operation
+            import time
+            time.sleep(0.5)
+            filtered_logs = self.fetch_model_logs()
+            
             # Refresh dropdown choices
-            return msg, gr.Dropdown(choices=self.get_document_choices())
+            return msg, gr.Dropdown(choices=self.get_document_choices()), filtered_logs
         except httpx.HTTPStatusError as e:
-            return f"❌ Upload and cache failed: {e.response.json().get('detail', str(e))}", gr.Dropdown(choices=self.get_document_choices())
+            return f"❌ Upload and cache failed: {e.response.json().get('detail', str(e))}", gr.Dropdown(choices=self.get_document_choices()), ""
         except Exception as e:
-            return f"❌ Upload and cache failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices())
+            return f"❌ Upload and cache failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices()), ""
 
 
     def clear_chat(self) -> Tuple[List, str, gr.Dropdown]:
@@ -388,6 +423,51 @@ class ChatbotWeb:
         return [], "", gr.Dropdown(choices=self.get_document_choices(), value="None")
 
 
+    def fetch_model_logs(self) -> str:
+        """
+        Fetch filtered model logs using multiple patterns:
+        - [MDW][Info][Runtime] (model runtime info)
+        - prompt eval time = (prompt processing performance)
+        - eval time = (token generation performance) 
+        - total time = (total processing time)
+        - slot update_slots: ... Hit token cnt (GPU): (complete slot update line with GPU cache stats)
+        
+        Only displays the most recent logs to show new activity
+        
+        Returns:
+            Formatted log string
+        """
+        try:
+            # Define multiple filter patterns for comprehensive log capture
+            patterns = [
+                r"\[MDW\]\[Info\]\[Runtime\]",  # Model runtime info
+                r"prompt eval time =",          # Prompt processing time
+                r"eval time =",                 # Token generation time
+                r"total time =",                # Total processing time
+                r"slot update_slots:.*Hit token cnt \(GPU\):"  # Complete slot update line with GPU hit count
+            ]
+            
+            # Combine patterns with OR operator
+            combined_pattern = "|".join(f"({pattern})" for pattern in patterns)
+            
+            # Request more lines to filter, but only show the last 20
+            result = self.client.get_model_logs(lines=1000, pattern=combined_pattern)
+            
+            if not result.get('logs'):
+                return "📭 No relevant logs available yet (checking for runtime, performance, slot, and cache hit logs)"
+            
+            logs = result['logs']
+            
+            # Only show the most recent 20 lines to focus on new activity
+            recent_logs = logs[-20:] if len(logs) > 20 else logs
+            
+            header = f""
+
+            return header + "".join(recent_logs)
+            
+        except Exception as e:
+            return f"❌ Failed to fetch logs: {str(e)}"
+    
     def restart_model(self) -> Generator[tuple, None, None]:
         """Restart model with new configuration (with loading status updates)"""
         # Initial loading message
@@ -406,13 +486,21 @@ class ChatbotWeb:
 
             # Format detailed logging for deploy_log display
             if result.get('status') == 'success':
+                # Show basic success info first
                 log_msg = f"✅ {result['message']}\n"
                 log_msg += f"PID: {result.get('pid', 'N/A')}\n"
                 log_msg += f"Port: {result.get('port', 'N/A')}\n"
                 log_msg += f"Time: {result['timestamp']}\n"
-                if result.get('command'):
-                    log_msg += f"Command: {result['command']}\n"
+                log_msg += "\n🔄 Fetching model server logs...\n"
                 yield status_msg, log_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
+                
+                # Wait a moment for logs to be written, then fetch filtered logs
+                import time
+                time.sleep(1)
+                
+                # Fetch and display filtered logs
+                filtered_logs = self.fetch_model_logs()
+                yield status_msg, filtered_logs, gr.Dropdown(choices=self.get_document_choices(), value="None")
             else:
                 # Handle error cases with detailed information
                 log_msg = f"❌ {result['message']}\n"
@@ -496,11 +584,24 @@ class ChatbotWeb:
                     )
                     refresh_btn = gr.Button("Refresh List", size="sm")
 
+                    gr.Markdown("---")
+
+                    # Model controls section (moved back to left sidebar)
+                    gr.Markdown("**Model Controls**")
+                    restart_btn = gr.Button("Restart Model", variant="primary", size="lg")
+                    model_status = gr.Textbox(
+                        label="Model Status",
+                        placeholder="Model status...",
+                        lines=1,
+                        interactive=False,
+                        show_label=False
+                    )
+
                 # Main chat area
                 with gr.Column(scale=3):
                     chatbot = gr.Chatbot(
                         label="Chat",
-                        height=450,
+                        height=400,
                         show_copy_button=True
                     )
 
@@ -514,29 +615,20 @@ class ChatbotWeb:
                             show_label=False
                         )
                         clear_btn = gr.Button("Clear", variant="secondary", scale=1)
-
-            # Bottom section - Model controls and logging
-            with gr.Row():
-                # Left - Model controls
-                with gr.Column(scale=1):
-                    restart_btn = gr.Button("Restart Model", variant="primary", size="lg")
-                    model_status = gr.Textbox(
-                        label="Model Status",
-                        placeholder="Model status will appear here...",
-                        lines=2,
-                        interactive=False,
-                        show_label=True
-                    )
-
-                # Right - Deploy logging
-                with gr.Column(scale=3):
+                    
+                    # Model logging directly under message input (tighter layout)
+                    with gr.Row():
+                        gr.Markdown("**📊 Model Logging**", elem_classes="compact-header")
+                        refresh_log_btn = gr.Button("🔄 Refresh", variant="secondary", size="sm", scale=0, min_width=100)
+                    
                     deploy_log = gr.Textbox(
-                        label="Deploy Model Logging",
-                        placeholder="Model logs will appear here...",
-                        lines=8,
+                        label="",
+                        placeholder="Model server logs will appear here...\nClick 'Refresh' to fetch latest logs.",
+                        lines=5,
                         interactive=False,
-                        max_lines=20,
-                        show_copy_button=True
+                        max_lines=15,
+                        show_copy_button=True,
+                        show_label=False
                     )
 
             # Event handlers
@@ -544,7 +636,7 @@ class ChatbotWeb:
             msg.submit(
                 fn=self.chat_with_bot,
                 inputs=[msg, chatbot, doc_dropdown],
-                outputs=[chatbot, msg]
+                outputs=[chatbot, msg, deploy_log]
             )
 
             # Upload events
@@ -557,7 +649,7 @@ class ChatbotWeb:
             upload_cache_btn.click(
                 fn=self.upload_file_and_cache,
                 inputs=[file_upload],
-                outputs=[upload_status, doc_dropdown]
+                outputs=[upload_status, doc_dropdown, deploy_log]
             )
 
             # Document management events
@@ -600,6 +692,13 @@ class ChatbotWeb:
                 fn=self.restart_model,
                 inputs=[],
                 outputs=[model_status, deploy_log, doc_dropdown]
+            )
+            
+            # Log refresh event
+            refresh_log_btn.click(
+                fn=self.fetch_model_logs,
+                inputs=[],
+                outputs=[deploy_log]
             )
 
         return demo

@@ -70,6 +70,12 @@ class LLMService:
     ) -> AsyncGenerator[str, None]:
         """Generate response using OpenAI compatible API"""
         try:
+            from services.model_log import model_log_service
+            # Log API request
+            user_message = messages[-1]['content'] if messages else ""
+            model_log_service.append_log(f"API Request - Model: {self.model}, Messages: {len(messages)}, Stream: {stream}")
+            model_log_service.append_log(f"User message: {user_message[:100]}..." if len(user_message) > 100 else f"User message: {user_message}")
+            
             response = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
@@ -80,16 +86,27 @@ class LLMService:
             
             if stream:
                 # Streaming response
+                full_response = ""
                 async for chunk in response:
                     if chunk.choices[0].delta.content:
-                        yield chunk.choices[0].delta.content
+                        content = chunk.choices[0].delta.content
+                        full_response += content
+                        yield content
+                
+                # Log complete response
+                model_log_service.append_log(f"API Response (streaming) - Length: {len(full_response)} chars")
+                model_log_service.append_log(f"Response content: {full_response[:200]}..." if len(full_response) > 200 else f"Response content: {full_response}")
             else:
                 # Non-streaming response
-                yield response.choices[0].message.content
+                response_content = response.choices[0].message.content
+                model_log_service.append_log(f"API Response - Length: {len(response_content)} chars")
+                model_log_service.append_log(f"Response content: {response_content[:200]}..." if len(response_content) > 200 else f"Response content: {response_content}")
+                yield response_content
                 
         except Exception as e:
             error_message = f"LLM API Error: {str(e)}"
             print(error_message)
+            model_log_service.append_log(f"API Error: {error_message}")
             yield error_message
     
     async def _mock_streaming_response(self, messages: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
