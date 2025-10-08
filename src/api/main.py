@@ -121,6 +121,7 @@ async def root():
             "messages": f"{settings.API_PREFIX}/session/{{session_id}}/messages",
             "documents": f"{settings.API_PREFIX}/documents",
             "upload_document": f"{settings.API_PREFIX}/documents/upload",
+            "cache_document": f"{settings.API_PREFIX}/documents/cache/{{doc_id}}",
             "model": f"{settings.API_PREFIX}/model",
             "logs": f"{settings.API_PREFIX}/logs/current",
             "logs_recent": f"{settings.API_PREFIX}/logs/recent",

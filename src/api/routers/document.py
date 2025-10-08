@@ -126,6 +126,89 @@ async def delete_document(doc_id: str):
     return {"message": "Document deleted successfully"}
 
 
+@router.post("/cache/{doc_id}")
+async def cache_document(doc_id: str):
+    """
+    Cache an already uploaded document in KV Cache
+    
+    This endpoint performs caching for an existing document:
+    1. Retrieve document content from document manager
+    2. Run inference with document content as system message (max_tokens=2)
+       - This populates the KV Cache in memory
+       - The cache is immediately available for subsequent queries
+       - Prefix matching will accelerate future requests with the same document
+    
+    No server restart is needed - the cache remains in memory and is ready for use.
+    """
+    # Step 0: Check if model server is running
+    if not model_server._is_running():
+        raise HTTPException(
+            status_code=503,
+            detail="Model server is not running. Please start the model server first."
+        )
+    
+    # Step 1: Get document from document manager
+    document = document_manager.get_document(doc_id)
+    if not document:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document with ID '{doc_id}' not found"
+        )
+    
+    # Ensure document content is loaded
+    if not document.content:
+        # Try to reload content from file
+        try:
+            with open(document.file_path, 'r', encoding='utf-8') as f:
+                document.content = f.read()
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to load document content: {str(e)}"
+            )
+    
+    # Step 2: Pre-cache document content via inference
+    # Prepare messages with only system role containing document content
+    messages = [
+        {
+            "role": "system",
+            "content": document.content
+        }
+    ]
+    
+    # Run inference with max_tokens=2 (we only care about caching the prefix)
+    # Temporarily override max_tokens
+    original_max_tokens = llm_service.max_tokens
+    llm_service.max_tokens = 2
+    
+    try:
+        # Log cache operation
+        from services.model_log import model_log_service
+        model_log_service.append_log(f"Cache operation started for document: {document.filename} (doc_id={doc_id})")
+        model_log_service.append_log(f"Document content length: {len(document.content)} chars")
+        
+        # Run inference to populate KV Cache
+        async for _ in llm_service.generate_response(messages, stream=False):
+            pass  # We don't care about the response, just caching
+        
+        model_log_service.append_log(f"Cache operation completed for document: {document.filename}")
+    except Exception as e:
+        from services.model_log import model_log_service
+        model_log_service.append_log(f"Cache operation failed for document {document.filename}: {str(e)}")
+        raise
+    finally:
+        # Restore original max_tokens
+        llm_service.max_tokens = original_max_tokens
+    
+    # Step 3: KV Cache is now populated and ready for use
+    return {
+        "doc_id": doc_id,
+        "filename": document.filename,
+        "file_size": document.file_size,
+        "message": f"Document '{document.filename}' cached successfully. KV Cache ready for prefix matching."
+    }
+
+
 @router.post("/upload_and_cache", response_model=DocumentUploadResponse)
 async def upload_document_and_cache(file: UploadFile = File(...)):
     """

@@ -58,6 +58,23 @@ class ChatbotClient:
             response.raise_for_status()
             return response.json()
     
+    def cache_document(self, doc_id: str) -> dict:
+        """
+        Cache an already uploaded document in KV Cache
+        
+        This function triggers KV Cache pre-warming for an existing document:
+        1. Retrieve document content from document manager
+        2. Run inference with document as system message (max_tokens=2)
+        
+        This enables prefix matching acceleration for subsequent queries.
+        """
+        response = self.client.post(
+            f"{self.api_base_url}/documents/cache/{doc_id}",
+            timeout=60.0  # 1 minute for caching operation
+        )
+        response.raise_for_status()
+        return response.json()
+    
     def upload_document_and_cache(self, file_path: str) -> dict:
         """
         Upload a document and pre-cache it in KV Cache
@@ -77,8 +94,8 @@ class ChatbotClient:
                 files=files,
                 timeout=180.0  # 3 minutes to allow for model restart
             )
-            response.raise_for_status()
-            return response.json()
+        response.raise_for_status()
+        return response.json()
 
     def list_documents(self) -> list:
         """Get list of all uploaded documents"""
@@ -302,7 +319,7 @@ class ChatbotWeb:
             return [("Error loading documents", "None")]
 
 
-    def upload_file(self, file) -> Tuple[str, gr.Dropdown]:
+    def upload_file(self, file) -> Tuple[str, gr.Dropdown, str]:
         """
         Handle file upload
 
@@ -310,20 +327,53 @@ class ChatbotWeb:
             file: Uploaded file object
 
         Returns:
-            Status message and updated dropdown
+            Status message, updated dropdown, and uploaded document ID
         """
         if file is None:
-            return "Please select a file to upload", gr.Dropdown(choices=self.get_document_choices())
+            return "Please select a file to upload", gr.Dropdown(choices=self.get_document_choices()), None
 
         try:
             result = self.client.upload_document(file.name)
             msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes"
-            # Refresh dropdown choices
-            return msg, gr.Dropdown(choices=self.get_document_choices())
+            # Refresh dropdown choices and return the doc_id
+            return msg, gr.Dropdown(choices=self.get_document_choices()), result['doc_id']
         except httpx.HTTPStatusError as e:
-            return f"❌ Upload failed: {e.response.json().get('detail', str(e))}", gr.Dropdown(choices=self.get_document_choices())
+            return f"❌ Upload failed: {e.response.json().get('detail', str(e))}", gr.Dropdown(choices=self.get_document_choices()), None
         except Exception as e:
-            return f"❌ Upload failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices())
+            return f"❌ Upload failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices()), None
+
+    def cache_selected_document(self, last_uploaded_doc_id: Optional[str], selected_doc: Optional[str]) -> Tuple[str, str]:
+        """
+        Cache the selected document in KV Cache
+        Priority: last uploaded document > dropdown selected document
+        
+        Args:
+            last_uploaded_doc_id: ID of the most recently uploaded document
+            selected_doc: Selected document ID from dropdown
+            
+        Returns:
+            Status message and model logs
+        """
+        # Priority: use last uploaded document if available, otherwise use dropdown selection
+        doc_id = last_uploaded_doc_id if last_uploaded_doc_id else selected_doc
+        
+        if not doc_id or doc_id == "None":
+            return "Please upload a document first or select one from the dropdown", ""
+        
+        try:
+            result = self.client.cache_document(doc_id)
+            msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes\n\n🚀 KV Cache is ready for prefix matching!"
+            
+            # Fetch and display new logs after cache operation
+            import time
+            time.sleep(0.5)
+            filtered_logs = self.fetch_model_logs()
+            
+            return msg, filtered_logs
+        except httpx.HTTPStatusError as e:
+            return f"❌ Cache failed: {e.response.json().get('detail', str(e))}", ""
+        except Exception as e:
+            return f"❌ Cache failed: {str(e)}. Please make sure the backend server is running.", ""
 
     def upload_file_and_cache(self, file) -> Tuple[str, gr.Dropdown, str]:
         """
@@ -562,7 +612,7 @@ class ChatbotWeb:
                     )
                     with gr.Row():
                         upload_btn = gr.Button("Upload", variant="primary", size="sm")
-                        upload_cache_btn = gr.Button("Upload & Cache", variant="secondary", size="sm")
+                        upload_cache_btn = gr.Button("Cache", variant="secondary", size="sm")
                     upload_status = gr.Textbox(
                         label="",
                         placeholder="Upload status will appear here...",
@@ -570,6 +620,8 @@ class ChatbotWeb:
                         lines=3,
                         show_label=False
                     )
+                    # Hidden state to track the most recently uploaded document ID
+                    last_uploaded_doc_id = gr.State(value=None)
 
                     gr.Markdown("---")
 
@@ -643,13 +695,13 @@ class ChatbotWeb:
             upload_btn.click(
                 fn=self.upload_file,
                 inputs=[file_upload],
-                outputs=[upload_status, doc_dropdown]
+                outputs=[upload_status, doc_dropdown, last_uploaded_doc_id]
             )
             
             upload_cache_btn.click(
-                fn=self.upload_file_and_cache,
-                inputs=[file_upload],
-                outputs=[upload_status, doc_dropdown, deploy_log]
+                fn=self.cache_selected_document,
+                inputs=[last_uploaded_doc_id, doc_dropdown],
+                outputs=[upload_status, deploy_log]
             )
 
             # Document management events
