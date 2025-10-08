@@ -18,6 +18,16 @@ import urllib.error
 from config import settings
 
 
+@dataclass(frozen=True)
+class ModelServerStatus:
+    """Model server status constants"""
+    SUCCESS: str = "success"
+    ERROR: str = "error"
+    STOPPED: str = "stopped"
+    RUNNING: str = "running"
+    UNKNOWN: str = "unknown"
+
+
 @dataclass
 class ModelServerConfig:
     """Configuration for model server"""
@@ -51,28 +61,30 @@ class ModelServer:
         self.config = ModelServerConfig.from_env()
         self.process: Optional[subprocess.Popen] = None
         self.logger = logging.getLogger(__name__)
-        
-    def _validate_paths(self) -> bool:
-        """Validate that required paths exist"""
-        if not self.config.exe:
-            self.logger.error("LLM_SERVER_EXE not configured")
-            return False
+        self.status = ModelServerStatus()
+
+    # # TODO: Deprecated method - use _validate_paths_detailed() instead
+    # def _validate_paths(self) -> bool:
+    #     """Validate that required paths exist"""
+    #     if not self.config.exe:
+    #         self.logger.error("LLM_SERVER_EXE not configured")
+    #         return False
             
-        if not self.config.model_path:
-            self.logger.error("LLM_SERVER_MODEL_NAME_OR_PATH not configured")
-            return False
+    #     if not self.config.model_path:
+    #         self.logger.error("LLM_SERVER_MODEL_NAME_OR_PATH not configured")
+    #         return False
             
-        exe_path = Path(self.config.exe)
-        if not exe_path.exists():
-            self.logger.error(f"Server executable not found: {exe_path}")
-            return False
+    #     exe_path = Path(self.config.exe)
+    #     if not exe_path.exists():
+    #         self.logger.error(f"Server executable not found: {exe_path}")
+    #         return False
             
-        model_path = Path(self.config.model_path)
-        if not model_path.exists():
-            self.logger.error(f"Model file not found: {model_path}")
-            return False
+    #     model_path = Path(self.config.model_path)
+    #     if not model_path.exists():
+    #         self.logger.error(f"Model file not found: {model_path}")
+    #         return False
             
-        return True
+    #     return True
     
     def _validate_paths_detailed(self) -> Dict[str, Any]:
         """Validate paths with detailed error information"""
@@ -281,24 +293,7 @@ class ModelServer:
             except Exception:
                 pass
 
-            args = [
-                str(exe_path),
-                "-m", str(model_path),
-                "-e", "-s", "0",
-                "--host", self.config.host,
-                "-c", str(self.config.context_size),
-                "-mg", "0",
-                "--offload-path", str(cache_path),
-                "--ssd-kv-offload-gb", str(self.config.offload_gb),
-                "--log-file", str(log_path),
-                "--parallel", "1",
-                "--no-context-shift",
-                "--kv-cache-resume-policy", "0" if reset else "1",
-                "--port", str(self.config.port),
-                "--dram-kv-offload-gb", str(self.config.dram_offload_gb),
-                "-ngl", str(self.config.ngl),
-                "-lv", str(self.config.log_level)
-            ]
+            args = self._get_server_args(reset)
             working_dir = exe_path.parent
 
             self.logger.info(f"Starting server with args: {' '.join(args)}")
@@ -325,7 +320,7 @@ class ModelServer:
             # Check if process is still running (didn't immediately crash)
             if self.process.poll() is None:
                 return {
-                    "status": "success",
+                    "status": self.status.SUCCESS,
                     "message": f"Model server started successfully (reset={reset})",
                     "pid": self.process.pid,
                     "port": self.config.port,
@@ -334,7 +329,7 @@ class ModelServer:
             else:
                 # Process terminated immediately
                 return {
-                    "status": "error",
+                    "status": self.status.ERROR,
                     "message": "Server process terminated immediately after start",
                     "details": {
                         "command": " ".join(args),
@@ -346,7 +341,7 @@ class ModelServer:
                 
         except FileNotFoundError as e:
             return {
-                "status": "error",
+                "status": self.status.ERROR,
                 "message": f"Executable not found: {str(e)}",
                 "details": {
                     "exe_path": self.config.exe,
@@ -355,7 +350,7 @@ class ModelServer:
             }
         except PermissionError as e:
             return {
-                "status": "error",
+                "status": self.status.ERROR,
                 "message": f"Permission denied: {str(e)}",
                 "details": {
                     "exe_path": self.config.exe,
@@ -365,11 +360,11 @@ class ModelServer:
         except Exception as e:
             self.logger.error(f"Error starting server: {e}")
             return {
-                "status": "error",
+                "status": self.status.ERROR,
                 "message": f"Failed to start server: {str(e)}",
                 "details": {
                     "error_type": type(e).__name__,
-                    "command": " ".join(self._get_server_args(reset)) if hasattr(self, 'config') else "Unknown"
+                    "command": " ".join(args)
                 }
             }
     
@@ -383,7 +378,7 @@ class ModelServer:
         try:
             if not self._is_running():
                 return {
-                    "status": "success",
+                    "status": self.status.SUCCESS,
                     "message": "Server was not running"
                 }
             
@@ -434,19 +429,19 @@ class ModelServer:
 
                 if not killed:
                     return {
-                        "status": "error",
+                        "status": self.status.ERROR,
                         "message": f"Could not find server process on port {self.config.port}"
                     }
             
             return {
-                "status": "success",
+                "status": self.status.SUCCESS,
                 "message": "Server stopped successfully"
             }
             
         except Exception as e:
             self.logger.error(f"Error stopping server: {e}")
             return {
-                "status": "error",
+                "status": self.status.ERROR,
                 "message": f"Failed to stop server: {str(e)}"
             }
     
@@ -459,7 +454,7 @@ class ModelServer:
         """
         if not self._is_running():
             return {
-                "status": "stopped",
+                "status": self.status.STOPPED,
                 "message": "Server is not running"
             }
         
@@ -467,7 +462,7 @@ class ModelServer:
             # Get process info
             process = psutil.Process(self.process.pid)
             return {
-                "status": "running",
+                "status": self.status.RUNNING,
                 "message": "Server is running",
                 "pid": self.process.pid,
                 "port": self.config.port,
@@ -477,7 +472,7 @@ class ModelServer:
             }
         except Exception as e:
             return {
-                "status": "unknown",
+                "status": self.status.UNKNOWN,
                 "message": f"Could not get status: {str(e)}"
             }
 
