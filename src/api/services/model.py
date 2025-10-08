@@ -477,14 +477,15 @@ class ModelServer:
                     os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
 
                 # Wait for process to terminate (allow time for cache saving)
+                _timeout = 30
                 try:
                     self.logger.info("Waiting for server to gracefully shutdown (saving KV cache)...")
                     # Flushing KV cache to SSD can take time, especially for large caches
-                    self.process.wait(timeout=60)  # Give enough time for "Flushing KV cache to SSD"
+                    self.process.wait(timeout=_timeout)  # Give enough time for "Flushing KV cache to SSD"
                     self.logger.info("Server shut down gracefully")
                 except subprocess.TimeoutExpired:
                     # Force kill if graceful shutdown failed
-                    self.logger.warning("Graceful shutdown timeout (60s), force killing process")
+                    self.logger.warning(f"Graceful shutdown timeout ({_timeout}s), force killing process")
                     self.logger.warning("This may prevent prefix_tree.bin from being saved")
                     if sys.platform == "win32":
                         self.process.kill()
