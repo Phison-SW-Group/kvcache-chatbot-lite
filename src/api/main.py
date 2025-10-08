@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager for startup and shutdown events"""
     # Startup
     import os
-    os.makedirs("uploads", exist_ok=True)
+    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     await session_manager.start_cleanup_task()
     
     # Initialize LLM service with config

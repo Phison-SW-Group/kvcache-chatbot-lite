@@ -329,10 +329,10 @@ class ChatbotWeb:
         """Refresh document list"""
         return gr.Dropdown(choices=self.get_document_choices())
 
-    def on_page_load(self) -> Tuple[List, str]:
-        """Handle page load/refresh - create new session"""
+    def on_page_load(self) -> Tuple[List, str, gr.Dropdown]:
+        """Handle page load/refresh - create new session and refresh document list"""
         self.client.reset_session()
-        return [], ""
+        return [], "", gr.Dropdown(choices=self.get_document_choices(), value="None")
 
 
     def restart_model(self) -> Generator[tuple, None, None]:
@@ -532,7 +532,7 @@ class ChatbotWeb:
             demo.load(
                 fn=self.on_page_load,
                 inputs=[],
-                outputs=[chatbot, upload_status]
+                outputs=[chatbot, upload_status, doc_dropdown]
             )
 
             # Model control events
