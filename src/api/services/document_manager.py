@@ -184,6 +184,28 @@ class DocumentManager:
             
             return True
         return False
+    
+    def clear_all_documents(self) -> int:
+        """
+        Clear all documents (used when model is reset)
+        
+        Returns:
+            Number of documents cleared
+        """
+        count = len(self._documents)
+        
+        # Delete all files
+        for doc in self._documents.values():
+            if doc.file_path.exists():
+                doc.file_path.unlink()
+        
+        # Clear in-memory documents
+        self._documents.clear()
+        
+        # Save empty metadata
+        self._save_metadata()
+        
+        return count
 
 
 # Global document manager instance

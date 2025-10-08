@@ -340,7 +340,7 @@ class ChatbotWeb:
         # Initial loading message
         loading_status = "🔄 Starting model server..."
         loading_log = "🔄 Restarting model server...\n⏳ This may take 30-90 seconds while the model loads...\n"
-        yield loading_status, loading_log
+        yield loading_status, loading_log, gr.Dropdown(choices=self.get_document_choices(), value="None")
 
         try:
             result = self.client.start_model_with_reset()
@@ -359,7 +359,7 @@ class ChatbotWeb:
                 log_msg += f"Time: {result['timestamp']}\n"
                 if result.get('command'):
                     log_msg += f"Command: {result['command']}\n"
-                yield status_msg, log_msg
+                yield status_msg, log_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
             else:
                 # Handle error cases with detailed information
                 log_msg = f"❌ {result['message']}\n"
@@ -394,11 +394,11 @@ class ChatbotWeb:
                     if details.get('hint'):
                         log_msg += f"💡 Hint: {details['hint']}\n"
 
-                yield status_msg, log_msg
+                yield status_msg, log_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
 
         except Exception as e:
             error_msg = f"❌ Failed to restart model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
-            yield error_msg, error_msg
+            yield error_msg, error_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
 
 
     def create_web(self):
@@ -539,7 +539,7 @@ class ChatbotWeb:
             restart_btn.click(
                 fn=self.restart_model,
                 inputs=[],
-                outputs=[model_status, deploy_log]
+                outputs=[model_status, deploy_log, doc_dropdown]
             )
 
         return demo

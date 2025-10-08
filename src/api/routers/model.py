@@ -8,6 +8,7 @@ from typing import Optional
 from datetime import datetime
 
 from services.model import model_server
+from services.document_manager import document_manager
 
 router = APIRouter(prefix="/model", tags=["model"])
 
@@ -59,9 +60,17 @@ async def start_model_without_reset(request: ModelUpRequest):
 async def start_model_with_reset(request: ModelUpRequest):
     """
     Start model with reset (restart with new configuration)
+    This will also clear all uploaded documents since KV cache is reset
     """
     try:
+        # Clear all documents when model is reset
+        cleared_count = document_manager.clear_all_documents()
+        
         result = model_server.up(reset=True)
+        
+        # Update message to include document clearing info
+        if cleared_count > 0:
+            result["message"] += f" (Cleared {cleared_count} document(s) due to model reset)"
         
         return ModelResponse(
             status=result["status"],
