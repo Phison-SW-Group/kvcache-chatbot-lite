@@ -12,10 +12,10 @@ from typing import List, Tuple, Optional, Generator
 
 @dataclass
 class WebArgs:
-    ip         : str = "0.0.0.0"
+    ip         : str = "localhost"
     port       : int = 7860
     share      : bool = False
-    backend_ip : str = "0.0.0.0"
+    backend_ip : str = "localhost"
     backend_port : int = 8000
 
     def __post_init__(self):
@@ -102,11 +102,11 @@ class ChatbotClient:
                 # Decode bytes to string if necessary
                 if isinstance(line, bytes):
                     line = line.decode('utf-8')
-                
+
                 # Skip empty lines
                 if not line.strip():
                     continue
-                
+
                 # Parse SSE data lines
                 if line.startswith("data: "):
                     try:
@@ -147,9 +147,11 @@ class ChatbotClient:
     def start_model_without_reset(self, model_name: str = None) -> dict:
         """Start model without resetting configuration"""
         payload = {"model_name": model_name} if model_name else {}
+        # Use longer timeout for model startup (can take 1-2 minutes to load)
         response = self.client.post(
             f"{self.api_base_url}/model/up/without_reset",
-            json=payload
+            json=payload,
+            timeout=180.0  # 3 minutes
         )
         response.raise_for_status()
         return response.json()
@@ -157,9 +159,11 @@ class ChatbotClient:
     def start_model_with_reset(self, model_name: str = None) -> dict:
         """Start model with reset (restart with new configuration)"""
         payload = {"model_name": model_name} if model_name else {}
+        # Use longer timeout for model startup (can take 1-2 minutes to load)
         response = self.client.post(
             f"{self.api_base_url}/model/up/reset",
-            json=payload
+            json=payload,
+            timeout=180.0  # 3 minutes
         )
         response.raise_for_status()
         return response.json()

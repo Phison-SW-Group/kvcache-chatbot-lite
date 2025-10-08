@@ -15,9 +15,9 @@ from services.llm_service import llm_service
 
 @dataclass
 class ApiArgs:
-    ip     : str  = "0.0.0.0"
+    ip     : str  = "localhost"
     port   : int  = 8000
-    reload : bool = True
+    reload : bool = False
 
     @classmethod
     def from_args(cls):
@@ -44,8 +44,6 @@ async def lifespan(app: FastAPI):
     
     # Initialize LLM service with config
     if settings.LLM_API_KEY:
-        from services.llm_service import LLMService
-        global llm_service
         llm_service.__init__(
             model=settings.LLM_MODEL,
             api_key=settings.LLM_API_KEY,
@@ -54,6 +52,8 @@ async def lifespan(app: FastAPI):
             max_tokens=settings.LLM_MAX_TOKENS
         )
         print(f"✅ LLM service initialized with model: {settings.LLM_MODEL}")
+        print(f"   Base URL: {settings.LLM_BASE_URL}")
+        print(f"   API Key: {'***' if settings.LLM_API_KEY else 'None'}")
     else:
         print("⚠️  No LLM API key provided, using mock responses")
     
@@ -61,6 +61,13 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     await session_manager.stop_cleanup_task()
+
+    # Stop model server if running
+    from services.model import model_server
+    if model_server._is_running():
+        print("🛑 Stopping model server...")
+        model_server.down()
+        print("✅ Model server stopped")
 
 
 # Create FastAPI app
@@ -111,8 +118,24 @@ async def health_check():
 
 if __name__ == "__main__":
     import uvicorn
+    import atexit
 
     args = ApiArgs.from_args()
+
+    # Register cleanup handler to ensure model server is stopped on exit
+    def cleanup_model_server():
+        """Ensure model server is stopped when backend exits"""
+        from services.model import model_server
+        if model_server._is_running():
+            print("\n🛑 Stopping model server...")
+            result = model_server.down()
+            if result.get("status") == "success":
+                print("✅ Model server stopped")
+            else:
+                print(f"⚠️ {result.get('message')}")
+
+    atexit.register(cleanup_model_server)
+
     uvicorn.run(
         "main:app",
         host=args.ip,

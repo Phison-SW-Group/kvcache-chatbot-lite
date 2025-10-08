@@ -12,6 +12,8 @@ from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
 import logging
+import urllib.request
+import urllib.error
 
 from config import settings
 
@@ -132,7 +134,7 @@ class ModelServer:
                     details["cache_created"] = False
             else:
                 details["cache_created"] = True
-        
+
         # Check log path
         if self.config.log_path:
             log_path = Path(self.config.log_path)
@@ -147,7 +149,7 @@ class ModelServer:
                     details["log_dir_created"] = False
             else:
                 details["log_dir_created"] = True
-        
+
         if errors:
             return {
                 "valid": False,
@@ -185,9 +187,57 @@ class ModelServer:
     
     def _is_running(self) -> bool:
         """Check if server process is running"""
-        if self.process is None:
+        # First check if we have a process reference
+        if self.process is not None and self.process.poll() is None:
+            return True
+
+        # Fallback: check if port is occupied (handles reload scenarios)
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(('localhost', self.config.port))
+            sock.close()
+            return False  # Port is free, server not running
+        except OSError:
+            # Port is occupied, assume server is running
+            return True
+
+    def _is_http_ready(self) -> bool:
+        """Check if HTTP endpoint is responding (OpenAI-compatible)."""
+        url = f"http://localhost:{self.config.port}/v1/models"
+        try:
+            with urllib.request.urlopen(url, timeout=2.0) as resp:
+                return 200 <= resp.status < 300
+        except urllib.error.HTTPError as e:
+            # 503 with "Loading model" means server is up but model still loading
+            if e.code == 503:
+                self.logger.debug("Server is up, model still loading...")
+                return False
             return False
-        return self.process.poll() is None
+        except urllib.error.URLError:
+            return False
+        except Exception:
+            return False
+
+    def _wait_until_ready(self, timeout_seconds: int = 90) -> bool:
+        """Poll the HTTP endpoint until it is ready or timeout."""
+        start = time.time()
+        # Initial short backoff while the binary loads the model
+        interval = 0.5
+        try:
+            while time.time() - start < timeout_seconds:
+                if not self._is_running():
+                    return False
+                if self._is_http_ready():
+                    return True
+                time.sleep(interval)
+                # Gradually increase interval up to 2s
+                if interval < 2.0:
+                    interval = min(2.0, interval + 0.25)
+            return False
+        except KeyboardInterrupt:
+            self.logger.info("Startup interrupted by user")
+            return False
     
     def up(self, reset: bool = True) -> Dict[str, Any]:
         """
@@ -214,40 +264,66 @@ class ModelServer:
                 self.logger.info("Stopping existing server process")
                 self.down()
                 time.sleep(2)  # Wait for process to terminate
-            
-            # Prepare command
-            args = self._get_server_args(reset)
-            working_dir = Path(self.config.exe).parent
-            
+
+            # Prepare command - using Path normalization like start_llama_non_reuse.py
+            exe_path = Path(self.config.exe)
+            model_path = Path(self.config.model_path)
+            cache_path = Path(self.config.cache_path)
+            log_path = Path(self.config.log_path)
+
+            # Ensure cache and log directories exist
+            try:
+                cache_path.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            try:
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+
+            args = [
+                str(exe_path),
+                "-m", str(model_path),
+                "-e", "-s", "0",
+                "--host", self.config.host,
+                "-c", str(self.config.context_size),
+                "-mg", "0",
+                "--offload-path", str(cache_path),
+                "--ssd-kv-offload-gb", str(self.config.offload_gb),
+                "--log-file", str(log_path),
+                "--parallel", "1",
+                "--no-context-shift",
+                "--kv-cache-resume-policy", "0" if reset else "1",
+                "--port", str(self.config.port),
+                "--dram-kv-offload-gb", str(self.config.dram_offload_gb),
+                "-ngl", str(self.config.ngl),
+                "-lv", str(self.config.log_level)
+            ]
+            working_dir = exe_path.parent
+
             self.logger.info(f"Starting server with args: {' '.join(args)}")
             self.logger.info(f"Working directory: {working_dir}")
-            
-            # Start server process with output capture
+
+            # Start server process - exactly like start_llama_non_reuse.py
+            popen_kwargs = dict(cwd=str(working_dir))
             if sys.platform == "win32":
-                # Windows: Use CREATE_NEW_PROCESS_GROUP to allow proper signal handling
-                self.process = subprocess.Popen(
-                    args,
-                    cwd=working_dir,
-                    creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True
-                )
-            else:
-                # Unix/Linux: Use preexec_fn to create new process group
-                self.process = subprocess.Popen(
-                    args,
-                    cwd=working_dir,
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    preexec_fn=os.setsid
-                )
-            
-            # Wait a moment to check if process started successfully
-            time.sleep(2)
-            
-            if self._is_running():
+                # Start in a new process group so we can later send CTRL_BREAK
+                popen_kwargs.update(creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+
+            # Don't capture stdout/stderr to avoid pipe buffer blocking
+            # llama-server logs are written to --log-file anyway
+            self.process = subprocess.Popen(
+                args,
+                **popen_kwargs
+            )
+
+            self.logger.info(f"llama-server started. PID={self.process.pid}")
+
+            # Wait a brief moment to check if process started successfully
+            time.sleep(0.5)
+
+            # Check if process is still running (didn't immediately crash)
+            if self.process.poll() is None:
                 return {
                     "status": "success",
                     "message": f"Model server started successfully (reset={reset})",
@@ -256,20 +332,15 @@ class ModelServer:
                     "command": " ".join(args)
                 }
             else:
-                # Try to get error output from the process
-                try:
-                    stdout, stderr = self.process.communicate(timeout=1)
-                    error_output = stderr.strip() if stderr else "No error output available"
-                except:
-                    error_output = "Process failed to start (timeout)"
-                
+                # Process terminated immediately
                 return {
                     "status": "error",
-                    "message": "Failed to start server process",
+                    "message": "Server process terminated immediately after start",
                     "details": {
-                        "error_output": error_output,
                         "command": " ".join(args),
-                        "working_dir": str(working_dir)
+                        "working_dir": str(working_dir),
+                        "log_file": str(log_path),
+                        "hint": "Check log file for error details"
                     }
                 }
                 
@@ -316,28 +387,56 @@ class ModelServer:
                     "message": "Server was not running"
                 }
             
-            self.logger.info(f"Stopping server process (PID: {self.process.pid})")
-            
-            if sys.platform == "win32":
-                # Windows: Send CTRL_BREAK_EVENT to process group
-                self.process.send_signal(signal.CTRL_BREAK_EVENT)
-            else:
-                # Unix/Linux: Send SIGTERM to process group
-                os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
-            
-            # Wait for process to terminate
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                # Force kill if graceful shutdown failed
-                self.logger.warning("Graceful shutdown failed, force killing process")
+            # If we have process reference, use it
+            if self.process is not None and self.process.poll() is None:
+                self.logger.info(f"Stopping server process (PID: {self.process.pid})")
+
                 if sys.platform == "win32":
-                    self.process.kill()
+                    # Windows: Send CTRL_BREAK_EVENT to process group
+                    self.process.send_signal(signal.CTRL_BREAK_EVENT)
                 else:
-                    os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                self.process.wait()
-            
-            self.process = None
+                    # Unix/Linux: Send SIGTERM to process group
+                    os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+
+                # Wait for process to terminate
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    # Force kill if graceful shutdown failed
+                    self.logger.warning("Graceful shutdown failed, force killing process")
+                    if sys.platform == "win32":
+                        self.process.kill()
+                    else:
+                        os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                    self.process.wait()
+
+                self.process = None
+            else:
+                # Fallback: find and kill process by port (for reload scenarios)
+                self.logger.info(f"Process reference lost, finding process by port {self.config.port}")
+                killed = False
+
+                for proc in psutil.process_iter(['pid', 'name', 'connections']):
+                    try:
+                        if proc.info['name'] and 'llama-server' in proc.info['name'].lower():
+                            for conn in proc.connections():
+                                if conn.laddr.port == self.config.port:
+                                    self.logger.info(f"Found server process: PID {proc.pid}")
+                                    proc.terminate()
+                                    try:
+                                        proc.wait(timeout=10)
+                                    except psutil.TimeoutExpired:
+                                        proc.kill()
+                                    killed = True
+                                    break
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        continue
+
+                if not killed:
+                    return {
+                        "status": "error",
+                        "message": f"Could not find server process on port {self.config.port}"
+                    }
             
             return {
                 "status": "success",
@@ -385,3 +484,30 @@ class ModelServer:
 
 # Global model server instance
 model_server = ModelServer()
+
+
+if __name__ == "__main__":
+    import json
+    print("=" * 60)
+    print("Testing ModelServer.up() with reset=True")
+    print("=" * 60)
+    
+    result = model_server.up(reset=True)
+    print(json.dumps(result, indent=2, default=str))
+    
+    if result["status"] == "success":
+        print("\n✅ Model server started successfully!")
+        print(f"PID: {result.get('pid')}")
+        print(f"Port: {result.get('port')}")
+        print("\nWaiting 5 seconds before checking status...")
+        import time
+        time.sleep(5)
+        
+        status = model_server.get_status()
+        print("\nStatus check:")
+        print(json.dumps(status, indent=2, default=str))
+        
+        print("\nTest complete. Remember to stop the server manually if needed.")
+    else:
+        print("\n❌ Failed to start model server")
+        print("Check the error details above")

@@ -13,6 +13,7 @@ __pycache__/
 # Project specific
 uploads/
 logs/
+legacy_scripts/
 
 # OS
 .DS_Store

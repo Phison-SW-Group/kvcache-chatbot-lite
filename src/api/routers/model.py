@@ -24,6 +24,10 @@ class ModelResponse(BaseModel):
     message: str
     timestamp: datetime
     model_name: Optional[str] = None
+    pid: Optional[int] = None
+    port: Optional[int] = None
+    command: Optional[str] = None
+    details: Optional[dict] = None
 
 
 @router.post("/up/without_reset", response_model=ModelResponse)
@@ -38,7 +42,11 @@ async def start_model_without_reset(request: ModelUpRequest):
             status=result["status"],
             message=result["message"],
             timestamp=datetime.now(),
-            model_name=request.model_name
+            model_name=request.model_name,
+            pid=result.get("pid"),
+            port=result.get("port"),
+            command=result.get("command"),
+            details=result.get("details")
         )
     except Exception as e:
         raise HTTPException(
@@ -59,7 +67,11 @@ async def start_model_with_reset(request: ModelUpRequest):
             status=result["status"],
             message=result["message"],
             timestamp=datetime.now(),
-            model_name=request.model_name
+            model_name=request.model_name,
+            pid=result.get("pid"),
+            port=result.get("port"),
+            command=result.get("command"),
+            details=result.get("details")
         )
     except Exception as e:
         raise HTTPException(
