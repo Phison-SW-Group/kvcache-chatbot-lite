@@ -95,7 +95,7 @@ async def stop_model():
     Stop the currently running model
     """
     try:
-        result = model_server.down()
+        result = await model_server.down()
         
         return ModelResponse(
             status=result["status"],

@@ -9,6 +9,7 @@ import signal
 import time
 import psutil
 import threading
+import asyncio
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Optional, Dict, Any
@@ -525,7 +526,7 @@ class ModelServer:
                 }
             }
     
-    def down(self) -> Dict[str, Any]:
+    async def down(self) -> Dict[str, Any]:
         """
         Stop the model server
         
@@ -563,25 +564,54 @@ class ModelServer:
                     os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
 
                 # Wait for process to terminate (allow time for cache saving)
-                _timeout = 30
+                _timeout = 5  # Short timeout since llama-server should respond quickly to SIGTERM/SIGINT
                 try:
                     self.logger.info("Waiting for server to gracefully shutdown (saving KV cache)...")
                     model_log_service.append_log("Waiting for server to gracefully shutdown (saving KV cache)...")
-                    # Flushing KV cache to SSD can take time, especially for large caches
-                    self.process.wait(timeout=_timeout)  # Give enough time for "Flushing KV cache to SSD"
-                    self.logger.info("Server shut down gracefully")
-                    model_log_service.append_log("✅ Server shut down gracefully")
+                    
+                    # Check if process already terminated
+                    if self.process.poll() is not None:
+                        self.logger.info("Server already terminated")
+                        model_log_service.append_log("✅ Server already terminated")
+                    else:
+                        # llama-server should respond to SIGTERM/SIGINT quickly (usually < 5s)
+                        # Use async polling instead of blocking wait
+                        for i in range(_timeout):
+                            await asyncio.sleep(1)
+                            if self.process.poll() is not None:
+                                self.logger.info(f"Server shut down gracefully after {i+1} seconds")
+                                model_log_service.append_log(f"✅ Server shut down gracefully after {i+1} seconds")
+                                break
+                        else:
+                            # Timeout reached
+                            raise subprocess.TimeoutExpired("", _timeout)
+                        
                 except subprocess.TimeoutExpired:
                     # Force kill if graceful shutdown failed
                     self.logger.warning(f"Graceful shutdown timeout ({_timeout}s), force killing process")
                     self.logger.warning("This may prevent prefix_tree.bin from being saved")
                     model_log_service.append_log(f"⚠️ Graceful shutdown timeout ({_timeout}s), force killing process")
                     model_log_service.append_log("⚠️ This may prevent prefix_tree.bin from being saved")
-                    if sys.platform == "win32":
-                        self.process.kill()
-                    else:
-                        os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
-                    self.process.wait()
+                    
+                    # Force kill the process
+                    try:
+                        if sys.platform == "win32":
+                            self.process.kill()
+                        else:
+                            os.killpg(os.getpgid(self.process.pid), signal.SIGKILL)
+                        # Async wait for force kill
+                        for i in range(2):
+                            await asyncio.sleep(1)
+                            if self.process.poll() is not None:
+                                self.logger.info(f"Process force-killed after {i+1} seconds")
+                                model_log_service.append_log(f"✅ Process force-killed after {i+1} seconds")
+                                break
+                        else:
+                            self.logger.error("Process still running after force kill")
+                            model_log_service.append_log("❌ Process still running after force kill")
+                    except Exception as e:
+                        self.logger.error(f"Failed to force kill process: {e}")
+                        model_log_service.append_log(f"❌ Failed to force kill process: {e}")
 
                 self.process = None
             else:
