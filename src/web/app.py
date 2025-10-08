@@ -269,15 +269,21 @@ class ChatbotWeb:
             return f"❌ Upload failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices())
 
 
-    def clear_chat(self) -> Tuple[List, str]:
+    def clear_chat(self) -> Tuple[List, str, gr.Dropdown]:
         """Clear chat history and reset session"""
         self.client.reset_session()
-        return [], "✓ Chat cleared. New session started."
+        # Reset dropdown to "None" to prevent using old document context
+        return [], "✓ Chat cleared. New session started.", gr.Dropdown(value="None")
 
 
     def refresh_documents(self) -> gr.Dropdown:
         """Refresh document list"""
         return gr.Dropdown(choices=self.get_document_choices())
+
+    def on_page_load(self) -> Tuple[List, str]:
+        """Handle page load/refresh - create new session"""
+        self.client.reset_session()
+        return [], ""
 
 
     def restart_model(self) -> Generator[tuple, None, None]:
@@ -451,9 +457,23 @@ class ChatbotWeb:
                 outputs=[doc_dropdown]
             )
 
-            # Clear chat
+            # Clear chat - handle both Clear button and Chatbot's built-in clear button
             clear_btn.click(
                 fn=self.clear_chat,
+                inputs=[],
+                outputs=[chatbot, upload_status, doc_dropdown]
+            )
+
+            # Handle Gradio Chatbot's built-in clear button (trash icon)
+            chatbot.clear(
+                fn=self.clear_chat,
+                inputs=[],
+                outputs=[chatbot, upload_status, doc_dropdown]
+            )
+
+            # Page load event - reset session on page load/refresh
+            demo.load(
+                fn=self.on_page_load,
                 inputs=[],
                 outputs=[chatbot, upload_status]
             )
