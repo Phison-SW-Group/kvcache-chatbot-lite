@@ -158,6 +158,7 @@ class ModelLogService:
     def get_server_logs(self, lines: int = 100, pattern: Optional[str] = None) -> list[str]:
         """
         Get logs from the llama-server log file (the actual model server logs)
+        Python threads capture llama-server's stdout/stderr and write to session log file
         
         Args:
             lines: Number of recent lines to retrieve
@@ -169,11 +170,11 @@ class ModelLogService:
         if not self.current_session:
             return []
         
-        # The llama-server writes to the same log file
+        # Python threads stream llama-server stdout/stderr to session log file
         log_path = self.current_session.log_file_path
         
         try:
-            with open(log_path, 'r', encoding='utf-8') as f:
+            with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                 all_lines = f.readlines()
                 
                 # Apply pattern filter if provided
@@ -189,7 +190,7 @@ class ModelLogService:
                 return all_lines[-lines:] if len(all_lines) > lines else all_lines
         except Exception as e:
             self.logger.error(f"Failed to read server logs: {e}")
-            return [f"ERROR: Failed to read logs: {e}\n"]
+            return [f"ERROR: Failed to read logs from {log_path}: {e}\n"]
     
     def list_log_sessions(self) -> list[dict]:
         """

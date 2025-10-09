@@ -68,19 +68,8 @@ class ModelServer:
         self.process: Optional[subprocess.Popen] = None
         self.logger = logging.getLogger(__name__)
         self.status = ModelServerStatus()
-        self.custom_log_path: Optional[str] = None  # Allow dynamic log path override
         self.log_threads: list = []  # Keep track of log streaming threads
         self.last_reset_mode: Optional[bool] = None  # Track last startup mode (True=reset, False=resume)
-    
-    def set_log_path(self, log_path: str):
-        """
-        Set custom log path for model server
-        
-        Args:
-            log_path: Custom path for model server logs
-        """
-        self.custom_log_path = log_path
-        self.logger.info(f"Custom log path set to: {log_path}")
     
     def _stream_output_to_log(self, stream, stream_name: str, log_file_path: str):
         """
@@ -460,13 +449,17 @@ class ModelServer:
             model_log_service.append_log(f"Server command: {' '.join(args)}")
             model_log_service.append_log(f"Working directory: {working_dir}")
 
-            # Start server process
-            # Note: Do NOT redirect stdout/stderr or use CREATE_NEW_PROCESS_GROUP
-            # This allows the process to properly receive console control events (Ctrl+C)
-            # which is necessary for llama-server to save prefix_tree.bin
+            # Start server process with stdout/stderr capture for logging
+            # KEY: Do NOT use CREATE_NEW_PROCESS_GROUP to allow Ctrl+C signal for prefix_tree.bin generation
             popen_kwargs = dict(
                 cwd=str(working_dir),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                bufsize=1  # Line buffered
             )
+            
+            # Note: Intentionally NOT using CREATE_NEW_PROCESS_GROUP on Windows
+            # to allow the process to receive console control events (Ctrl+C)
 
             # Start process with stdout/stderr capture
             self.process = subprocess.Popen(
@@ -476,7 +469,27 @@ class ModelServer:
 
             self.logger.info(f"llama-server started. PID={self.process.pid}")
             model_log_service.append_log(f"llama-server process started. PID={self.process.pid}")
-            model_log_service.append_log(f"llama-server output will be in its own log file (not redirected)")
+            
+            # Start threads to stream stdout and stderr to log file
+            # Use model_log_service's current log path
+            current_log_path = model_log_service.get_current_log_path() or str(log_path)
+            
+            stdout_thread = threading.Thread(
+                target=self._stream_output_to_log,
+                args=(self.process.stdout, "stdout", current_log_path),
+                daemon=True
+            )
+            stderr_thread = threading.Thread(
+                target=self._stream_output_to_log,
+                args=(self.process.stderr, "stderr", current_log_path),
+                daemon=True
+            )
+            
+            stdout_thread.start()
+            stderr_thread.start()
+            
+            self.log_threads = [stdout_thread, stderr_thread]
+            model_log_service.append_log(f"Logging to: {current_log_path}")
 
             # Wait a brief moment to check if process started successfully
             time.sleep(0.5)

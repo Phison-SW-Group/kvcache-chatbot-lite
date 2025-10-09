@@ -47,10 +47,7 @@ async def lifespan(app: FastAPI):
     log_session = model_log_service.create_session()
     print(f"📝 Model log session created: {log_session.session_id}")
     print(f"   Log file: {log_session.log_file_path}")
-    
-    # Configure model server to use unique log file
-    from services.model import model_server
-    model_server.set_log_path(log_session.log_file_path)
+    print(f"   llama-server will write logs to this file via --log-file parameter")
     
     # Initialize LLM service with config
     if settings.LLM_API_KEY:
