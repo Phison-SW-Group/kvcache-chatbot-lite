@@ -3,6 +3,7 @@ Configuration settings for the API
 """
 from pydantic_settings import BaseSettings
 from typing import Optional
+from pathlib import Path
 
 
 class Settings(BaseSettings):
@@ -34,7 +35,8 @@ class Settings(BaseSettings):
     LLM_SERVER_LOG: Optional[str] = None
 
     class Config:
-        env_file = ".env"
+        # Use absolute path to .env file (relative to this config.py file)
+        env_file = str(Path(__file__).parent / ".env")
         case_sensitive = True
 
 

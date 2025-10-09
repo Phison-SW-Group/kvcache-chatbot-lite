@@ -20,6 +20,10 @@ import urllib.error
 from config import settings
 
 
+# llama-server creates this subdirectory under cache_path
+MAESTRO_CACHE_SUBDIR = "maestro_phison"
+
+
 @dataclass(frozen=True)
 class ModelServerStatus:
     """Model server status constants"""
@@ -687,15 +691,23 @@ class ModelServer:
                 # Check if prefix_tree.bin was created
                 try:
                     cache_path = Path(self.config.cache_path)
-                    prefix_tree_file = cache_path / "prefix_tree.bin"
-                    
                     resume_policy_mode = "reset (0)" if self.last_reset_mode else "resume (1)"
                     model_log_service.append_log(f"Checking for prefix_tree.bin (startup mode was: {resume_policy_mode})...")
+                    
+                    # llama-server creates maestro_phison subdirectory
+                    prefix_tree_file = cache_path / MAESTRO_CACHE_SUBDIR / "prefix_tree.bin"
+                    
+                    # Fallback: also check directly in cache_path
+                    if not prefix_tree_file.exists():
+                        prefix_tree_file_alt = cache_path / "prefix_tree.bin"
+                        if prefix_tree_file_alt.exists():
+                            prefix_tree_file = prefix_tree_file_alt
                     
                     if prefix_tree_file.exists():
                         file_size = prefix_tree_file.stat().st_size
                         self.logger.info(f"✅ prefix_tree.bin found: {prefix_tree_file} ({file_size} bytes)")
-                        model_log_service.append_log(f"✅ prefix_tree.bin found: {file_size} bytes")
+                        model_log_service.append_log(f"✅ prefix_tree.bin found at: {prefix_tree_file}")
+                        model_log_service.append_log(f"   File size: {file_size:,} bytes")
                     else:
                         self.logger.warning(f"⚠️ prefix_tree.bin NOT found at: {prefix_tree_file}")
                         model_log_service.append_log(f"⚠️ prefix_tree.bin NOT found at: {prefix_tree_file}")
@@ -709,7 +721,7 @@ class ModelServer:
                             model_log_service.append_log("   Model was in RESUME mode - prefix_tree.bin should have been saved")
                             model_log_service.append_log("   Possible reasons for missing file:")
                             model_log_service.append_log("   1. No inference was performed (no KV cache to save)")
-                            model_log_service.append_log("   2. CTRL_BREAK_EVENT signal not properly handled")
+                            model_log_service.append_log("   2. CTRL_C signal not properly handled")
                             model_log_service.append_log("   3. Insufficient time before forced shutdown")
                 except Exception as e:
                     self.logger.error(f"Error checking prefix_tree.bin: {e}")

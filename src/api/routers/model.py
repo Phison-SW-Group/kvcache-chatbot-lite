@@ -6,12 +6,23 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 from datetime import datetime
+from pathlib import Path
 
 from services.model import model_server
 from services.document_manager import document_manager
 
 router = APIRouter(prefix="/model", tags=["model"])
 
+# llama-server creates this subdirectory under cache_path
+MAESTRO_CACHE_SUBDIR = "maestro_phison"
+
+
+def get_prefix_tree_path(cache_path: Path) -> Path:
+    """
+    Get the expected path for prefix_tree.bin
+    Returns the path in maestro_phison subdirectory
+    """
+    return cache_path / MAESTRO_CACHE_SUBDIR / "prefix_tree.bin"
 
 class ModelUpRequest(BaseModel):
     """Request model for model startup operations"""
@@ -129,18 +140,24 @@ async def get_model_status():
 async def check_cache_existence():
     """
     Check if prefix_tree.bin exists in cache directory
+    llama-server creates a maestro_phison subdirectory under the cache path
     """
     try:
-        from pathlib import Path
+        # TODO HARDCODED: Directly check R:\maestro_phison\prefix_tree.bin
+        prefix_tree_file = Path("R:/maestro_phison/prefix_tree.bin")
         
-        cache_path = Path(model_server.config.cache_path)
-        prefix_tree_file = cache_path / "prefix_tree.bin"
-        
-        return {
-            "cache_path": str(cache_path),
-            "prefix_tree_exists": prefix_tree_file.exists(),
-            "prefix_tree_path": str(prefix_tree_file)
-        }
+        if prefix_tree_file.exists():
+            return {
+                "cache_path": "R:\\",
+                "prefix_tree_exists": True,
+                "prefix_tree_path": str(prefix_tree_file)
+            }
+        else:
+            return {
+                "cache_path": "R:\\",
+                "prefix_tree_exists": False,
+                "prefix_tree_path": str(prefix_tree_file)
+            }
     except Exception as e:
         raise HTTPException(
             status_code=500,

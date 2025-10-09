@@ -598,12 +598,20 @@ class ChatbotWeb:
         """
         try:
             # Call a dedicated endpoint to check prefix_tree.bin existence
-            response = self.client.get(f"{self.api_base_url}/model/check_cache_existence")
+            url = f"{self.client.api_base_url}/model/check_cache_existence"
+            print(f"DEBUG: Checking prefix_tree at: {url}")
+            response = self.client.client.get(url)
             response.raise_for_status()
             result = response.json()
-            return result.get("prefix_tree_exists", False)
-        except Exception:
+            print(f"DEBUG: API response: {result}")
+            exists = result.get("prefix_tree_exists", False)
+            print(f"DEBUG: prefix_tree_exists = {exists}")
+            return exists
+        except Exception as e:
             # If check endpoint doesn't exist or fails, assume it doesn't exist
+            print(f"DEBUG: Exception in check_prefix_tree_exists: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def start_model_without_reset(self) -> Tuple[str, str]:
@@ -613,8 +621,24 @@ class ChatbotWeb:
         """
         try:
             # First check if prefix_tree.bin exists
-            if not self.check_prefix_tree_exists():
-                error_msg = "❌ prefix_tree.bin not found in cache directory.\n\n💡 Please use 'Start Model with Reset' first to create the cache file."
+            url = f"{self.client.api_base_url}/model/check_cache_existence"
+            try:
+                response = self.client.client.get(url)
+                response.raise_for_status()
+                result = response.json()
+                
+                debug_msg = f"🔍 DEBUG INFO:\n"
+                debug_msg += f"API URL: {url}\n"
+                debug_msg += f"Response: {json.dumps(result, indent=2)}\n\n"
+                
+                if not result.get("prefix_tree_exists", False):
+                    error_msg = debug_msg + "❌ prefix_tree.bin not found in cache directory.\n\n💡 Please use 'Start Model with Reset' first to create the cache file."
+                    return error_msg, ""
+            except Exception as e:
+                error_msg = f"🔍 DEBUG: API call failed\n"
+                error_msg += f"URL: {url}\n"
+                error_msg += f"Error: {str(e)}\n\n"
+                error_msg += "❌ Could not check prefix_tree.bin.\n\n💡 Please check backend connection."
                 return error_msg, ""
             
             # If prefix_tree.bin exists, proceed with starting model
