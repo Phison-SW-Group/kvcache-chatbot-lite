@@ -80,7 +80,7 @@ async def lifespan(app: FastAPI):
     if model_server._is_running():
         print("🛑 Stopping model server...")
         model_log_service.append_log("Shutting down model server...")
-        model_server.down()
+        await model_server.down()
         print("✅ Model server stopped")
         model_log_service.append_log("Model server stopped successfully")
 
