@@ -123,3 +123,26 @@ async def get_model_status():
             status_code=500,
             detail=f"Failed to get model status: {str(e)}"
         )
+
+
+@router.get("/check_cache_existence")
+async def check_cache_existence():
+    """
+    Check if prefix_tree.bin exists in cache directory
+    """
+    try:
+        from pathlib import Path
+        
+        cache_path = Path(model_server.config.cache_path)
+        prefix_tree_file = cache_path / "prefix_tree.bin"
+        
+        return {
+            "cache_path": str(cache_path),
+            "prefix_tree_exists": prefix_tree_file.exists(),
+            "prefix_tree_path": str(prefix_tree_file)
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to check cache: {str(e)}"
+        )

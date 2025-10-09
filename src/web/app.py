@@ -591,6 +591,51 @@ class ChatbotWeb:
             error_msg = f"❌ Failed to restart model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
             yield error_msg, error_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
 
+    def check_prefix_tree_exists(self) -> bool:
+        """
+        Check if prefix_tree.bin exists in cache directory
+        Returns True if exists, False otherwise
+        """
+        try:
+            # Call a dedicated endpoint to check prefix_tree.bin existence
+            response = self.client.get(f"{self.api_base_url}/model/check_cache_existence")
+            response.raise_for_status()
+            result = response.json()
+            return result.get("prefix_tree_exists", False)
+        except Exception:
+            # If check endpoint doesn't exist or fails, assume it doesn't exist
+            return False
+
+    def start_model_without_reset(self) -> Tuple[str, str]:
+        """
+        Start model without resetting configuration
+        Checks for prefix_tree.bin before making API call
+        """
+        try:
+            # First check if prefix_tree.bin exists
+            if not self.check_prefix_tree_exists():
+                error_msg = "❌ prefix_tree.bin not found in cache directory.\n\n💡 Please use 'Start Model with Reset' first to create the cache file."
+                return error_msg, ""
+            
+            # If prefix_tree.bin exists, proceed with starting model
+            result = self.client.start_model_without_reset()
+            
+            # Format status message
+            status_msg = f"✅ {result['message']}"
+            if result.get('pid'):
+                status_msg += f" (PID: {result['pid']})"
+            if result.get('port'):
+                status_msg += f" (Port: {result['port']})"
+            
+            # Fetch updated logs
+            logs = self.fetch_model_logs()
+            
+            return status_msg, logs
+            
+        except Exception as e:
+            error_msg = f"❌ Failed to start model without reset: {str(e)}"
+            return error_msg, ""
+
     def stop_model(self) -> Tuple[str, str]:
         """
         Stop the currently running model
@@ -668,6 +713,7 @@ class ChatbotWeb:
                     # Model controls section (moved back to left sidebar)
                     gr.Markdown("**Model Controls**")
                     restart_btn = gr.Button("Start Model with Reset", variant="primary", size="sm")
+                    start_no_reset_btn = gr.Button("Start Model without Reset", variant="primary", size="sm")
                     down_btn = gr.Button("Stop Model", variant="secondary", size="sm")
                     model_status = gr.Textbox(
                         label="Model Status",
@@ -772,6 +818,12 @@ class ChatbotWeb:
                 fn=self.restart_model,
                 inputs=[],
                 outputs=[model_status, deploy_log, doc_dropdown]
+            )
+            
+            start_no_reset_btn.click(
+                fn=self.start_model_without_reset,
+                inputs=[],
+                outputs=[model_status, deploy_log]
             )
             
             down_btn.click(

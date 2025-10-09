@@ -359,6 +359,7 @@ class ModelServer:
                     "details": validation_result["details"]
                 }
             
+            
             # Stop existing server if running
             if self._is_running():
                 self.logger.info("Stopping existing server process")
