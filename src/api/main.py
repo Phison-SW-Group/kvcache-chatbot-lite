@@ -145,14 +145,26 @@ if __name__ == "__main__":
     # Register cleanup handler to ensure model server is stopped on exit
     def cleanup_model_server():
         """Ensure model server is stopped when backend exits"""
+        import asyncio
         from services.model import model_server
         if model_server._is_running():
             print("\n🛑 Stopping model server...")
-            result = model_server.down()
-            if result.get("status") == "success":
-                print("✅ Model server stopped")
-            else:
-                print(f"⚠️ {result.get('message')}")
+            try:
+                # Run the async down() method in a new event loop
+                result = asyncio.run(model_server.down())
+                if result.get("status") == "success":
+                    print("✅ Model server stopped")
+                else:
+                    print(f"⚠️ {result.get('message')}")
+            except Exception as e:
+                print(f"❌ Error stopping model server: {e}")
+                # Force kill as last resort
+                try:
+                    if model_server.process and model_server.process.poll() is None:
+                        model_server.process.kill()
+                        print("🔨 Force killed model server process")
+                except:
+                    pass
 
     atexit.register(cleanup_model_server)
 

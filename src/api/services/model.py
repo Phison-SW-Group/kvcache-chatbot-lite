@@ -66,6 +66,7 @@ class ModelServer:
         self.status = ModelServerStatus()
         self.custom_log_path: Optional[str] = None  # Allow dynamic log path override
         self.log_threads: list = []  # Keep track of log streaming threads
+        self.last_reset_mode: Optional[bool] = None  # Track last startup mode (True=reset, False=resume)
     
     def set_log_path(self, log_path: str):
         """
@@ -267,6 +268,67 @@ class ModelServer:
         except Exception:
             return False
 
+    def _send_ctrl_c_via_console_attach(self, pid: int) -> bool:
+        """
+        Send CTRL_C event to process using console attachment (Windows only).
+        This is the most reliable way to trigger graceful shutdown with prefix_tree.bin saving.
+        
+        Based on the working implementation from process_manager.py
+        """
+        if sys.platform != "win32":
+            return False
+            
+        try:
+            import ctypes
+            
+            kernel32 = ctypes.windll.kernel32
+            ATTACH_PARENT_PROCESS = -1
+            
+            self.logger.info(f"Attempting console attach to PID {pid}...")
+            
+            # Step 1: Free current console attachment
+            try:
+                kernel32.FreeConsole()
+            except Exception:
+                pass
+            
+            # Step 2: Attach to target process console
+            if not kernel32.AttachConsole(pid):
+                err = ctypes.get_last_error()
+                try:
+                    msg = str(ctypes.WinError(err))
+                except Exception:
+                    msg = ""
+                self.logger.warning(f"AttachConsole({pid}) failed, last_error={err} {msg}")
+                return False
+            
+            try:
+                # Step 3: Ignore CTRL_C in current process to avoid self-interrupt
+                kernel32.SetConsoleCtrlHandler(None, True)
+                
+                # Step 4: Send CTRL_C_EVENT (0) to process group
+                # This is equivalent to pressing Ctrl+C in the console
+                sent = kernel32.GenerateConsoleCtrlEvent(0, pid)  # 0 = CTRL_C_EVENT
+                if sent:
+                    self.logger.info("✅ Successfully sent CTRL_C via console attach")
+                    return True
+                else:
+                    self.logger.warning("GenerateConsoleCtrlEvent returned False")
+                    return False
+            finally:
+                # Step 5: Clean up console attachments
+                time.sleep(0.2)  # Small delay for event propagation
+                kernel32.FreeConsole()
+                kernel32.SetConsoleCtrlHandler(None, False)
+                try:
+                    kernel32.AttachConsole(ATTACH_PARENT_PROCESS)
+                except Exception:
+                    pass
+                    
+        except Exception as e:
+            self.logger.error(f"Failed to send CTRL_C via console attach: {e}")
+            return False
+    
     def _is_completion_ready(self) -> bool:
         """Check if chat/completions endpoint is ready (not returning 503)."""
         import json
@@ -360,6 +422,9 @@ class ModelServer:
                 }
             
             
+            # Store the reset mode for later reference
+            self.last_reset_mode = reset
+            
             # Stop existing server if running
             if self._is_running():
                 self.logger.info("Stopping existing server process")
@@ -391,17 +456,13 @@ class ModelServer:
             model_log_service.append_log(f"Server command: {' '.join(args)}")
             model_log_service.append_log(f"Working directory: {working_dir}")
 
-            # Start server process with stdout/stderr capture
+            # Start server process
+            # Note: Do NOT redirect stdout/stderr or use CREATE_NEW_PROCESS_GROUP
+            # This allows the process to properly receive console control events (Ctrl+C)
+            # which is necessary for llama-server to save prefix_tree.bin
             popen_kwargs = dict(
                 cwd=str(working_dir),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                bufsize=1  # Line buffered
             )
-            
-            if sys.platform == "win32":
-                # Create new process group to isolate from parent console
-                popen_kwargs.update(creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
 
             # Start process with stdout/stderr capture
             self.process = subprocess.Popen(
@@ -411,26 +472,7 @@ class ModelServer:
 
             self.logger.info(f"llama-server started. PID={self.process.pid}")
             model_log_service.append_log(f"llama-server process started. PID={self.process.pid}")
-            
-            # Start threads to stream stdout and stderr to log file
-            # Use the custom log path for capturing server output
-            current_log_path = self.custom_log_path if self.custom_log_path else str(log_path)
-            
-            stdout_thread = threading.Thread(
-                target=self._stream_output_to_log,
-                args=(self.process.stdout, "stdout", current_log_path),
-                daemon=True
-            )
-            stderr_thread = threading.Thread(
-                target=self._stream_output_to_log,
-                args=(self.process.stderr, "stderr", current_log_path),
-                daemon=True
-            )
-            
-            stdout_thread.start()
-            stderr_thread.start()
-            
-            self.log_threads = [stdout_thread, stderr_thread]
+            model_log_service.append_log(f"llama-server output will be in its own log file (not redirected)")
 
             # Wait a brief moment to check if process started successfully
             time.sleep(0.5)
@@ -446,8 +488,8 @@ class ModelServer:
                     "details": {
                         "command": " ".join(args),
                         "working_dir": str(working_dir),
-                        "log_file": current_log_path,
-                        "hint": "Check log file for error details"
+                        "log_file": str(log_path),
+                        "hint": "Check llama-server log file for error details"
                     }
                 }
 
@@ -474,8 +516,8 @@ class ModelServer:
                         "message": error_msg,
                         "details": {
                             "command": " ".join(args),
-                            "log_file": current_log_path,
-                            "hint": "Check log file for error details"
+                            "log_file": str(log_path),
+                            "hint": "Check llama-server log file for error details"
                         }
                     }
                 else:
@@ -487,8 +529,8 @@ class ModelServer:
                         "details": {
                             "pid": self.process.pid,
                             "port": self.config.port,
-                            "log_file": current_log_path,
-                            "hint": "Model may still be loading. Check log file or try again later."
+                            "log_file": str(log_path),
+                            "hint": "Model may still be loading. Check llama-server log file or try again later."
                         }
                     }
                 
@@ -547,25 +589,51 @@ class ModelServer:
             
             # If we have process reference, use it
             if self.process is not None and self.process.poll() is None:
-                self.logger.info(f"Stopping server process (PID: {self.process.pid})")
-                model_log_service.append_log(f"Stopping server process (PID: {self.process.pid})")
+                pid = self.process.pid
+                self.logger.info(f"Stopping server process (PID: {pid})")
+                model_log_service.append_log(f"Stopping server process (PID: {pid})")
 
+                signal_sent = False
+                
                 if sys.platform == "win32":
-                    # Windows: Send CTRL_C_EVENT for graceful shutdown
-                    # This should trigger llama-server to save prefix_tree.bin
-                    try:
-                        self.logger.info("Sending CTRL_C_EVENT for graceful shutdown...")
-                        os.kill(self.process.pid, signal.CTRL_C_EVENT)
-                    except Exception as e:
-                        # If CTRL_C fails, try CTRL_BREAK as fallback
-                        self.logger.warning(f"CTRL_C_EVENT failed: {e}, trying CTRL_BREAK_EVENT")
-                        self.process.send_signal(signal.CTRL_BREAK_EVENT)
+                    # Windows: Use console attach method to send CTRL_C (most reliable)
+                    # This is equivalent to pressing Ctrl+C in the console window
+                    self.logger.info("Using console attach method to send CTRL_C...")
+                    model_log_service.append_log("Sending CTRL_C via console attachment (equivalent to Ctrl+C)...")
+                    
+                    if self._send_ctrl_c_via_console_attach(pid):
+                        signal_sent = True
+                        model_log_service.append_log("✅ CTRL_C sent successfully via console attach")
+                    else:
+                        self.logger.warning("Console attach method failed, trying fallback...")
+                        model_log_service.append_log("⚠️ Console attach failed, trying fallback signal...")
+                        # Fallback: try SIGTERM
+                        try:
+                            os.kill(pid, signal.SIGTERM)
+                            signal_sent = True
+                            model_log_service.append_log("✅ Sent SIGTERM as fallback")
+                        except Exception as e:
+                            self.logger.error(f"Fallback signal also failed: {e}")
+                            model_log_service.append_log(f"❌ Fallback signal failed: {e}")
                 else:
                     # Unix/Linux: Send SIGTERM to process group
-                    os.killpg(os.getpgid(self.process.pid), signal.SIGTERM)
+                    try:
+                        os.killpg(os.getpgid(pid), signal.SIGTERM)
+                        signal_sent = True
+                    except Exception as e:
+                        self.logger.error(f"Failed to send SIGTERM: {e}")
+                        
+                if not signal_sent:
+                    error_msg = "Failed to send shutdown signal to process"
+                    model_log_service.append_log(f"❌ {error_msg}")
+                    return {
+                        "status": self.status.ERROR,
+                        "message": error_msg
+                    }
 
                 # Wait for process to terminate (allow time for cache saving)
-                _timeout = 5  # Short timeout since llama-server should respond quickly to SIGTERM/SIGINT
+                # llama-server may need significant time to save prefix_tree.bin for large KV caches
+                _timeout = 30  # Increased timeout to allow proper KV cache saving
                 try:
                     self.logger.info("Waiting for server to gracefully shutdown (saving KV cache)...")
                     model_log_service.append_log("Waiting for server to gracefully shutdown (saving KV cache)...")
@@ -589,10 +657,10 @@ class ModelServer:
                         
                 except subprocess.TimeoutExpired:
                     # Force kill if graceful shutdown failed
-                    self.logger.warning(f"Graceful shutdown timeout ({_timeout}s), force killing process")
-                    self.logger.warning("This may prevent prefix_tree.bin from being saved")
-                    model_log_service.append_log(f"⚠️ Graceful shutdown timeout ({_timeout}s), force killing process")
-                    model_log_service.append_log("⚠️ This may prevent prefix_tree.bin from being saved")
+                    self.logger.warning(f"Graceful shutdown timeout after {_timeout}s, force killing process")
+                    self.logger.warning("⚠️ This will prevent prefix_tree.bin from being saved!")
+                    model_log_service.append_log(f"⚠️ Graceful shutdown timeout after {_timeout}s, force killing process")
+                    model_log_service.append_log("⚠️ This will prevent prefix_tree.bin from being saved!")
                     
                     # Force kill the process
                     try:
@@ -615,6 +683,36 @@ class ModelServer:
                         model_log_service.append_log(f"❌ Failed to force kill process: {e}")
 
                 self.process = None
+                
+                # Check if prefix_tree.bin was created
+                try:
+                    cache_path = Path(self.config.cache_path)
+                    prefix_tree_file = cache_path / "prefix_tree.bin"
+                    
+                    resume_policy_mode = "reset (0)" if self.last_reset_mode else "resume (1)"
+                    model_log_service.append_log(f"Checking for prefix_tree.bin (startup mode was: {resume_policy_mode})...")
+                    
+                    if prefix_tree_file.exists():
+                        file_size = prefix_tree_file.stat().st_size
+                        self.logger.info(f"✅ prefix_tree.bin found: {prefix_tree_file} ({file_size} bytes)")
+                        model_log_service.append_log(f"✅ prefix_tree.bin found: {file_size} bytes")
+                    else:
+                        self.logger.warning(f"⚠️ prefix_tree.bin NOT found at: {prefix_tree_file}")
+                        model_log_service.append_log(f"⚠️ prefix_tree.bin NOT found at: {prefix_tree_file}")
+                        model_log_service.append_log(f"   Startup mode: {resume_policy_mode}")
+                        
+                        if self.last_reset_mode:
+                            model_log_service.append_log("   ⚠️ Model was started in RESET mode (--kv-cache-resume-policy 0)")
+                            model_log_service.append_log("   ⚠️ In reset mode, llama-server may not save prefix_tree.bin")
+                            model_log_service.append_log("   ℹ️ To enable prefix_tree.bin saving, use RESUME mode (policy 1)")
+                        else:
+                            model_log_service.append_log("   Model was in RESUME mode - prefix_tree.bin should have been saved")
+                            model_log_service.append_log("   Possible reasons for missing file:")
+                            model_log_service.append_log("   1. No inference was performed (no KV cache to save)")
+                            model_log_service.append_log("   2. CTRL_BREAK_EVENT signal not properly handled")
+                            model_log_service.append_log("   3. Insufficient time before forced shutdown")
+                except Exception as e:
+                    self.logger.error(f"Error checking prefix_tree.bin: {e}")
             else:
                 # Fallback: find and kill process by port (for reload scenarios)
                 self.logger.info(f"Process reference lost, finding process by port {self.config.port}")
