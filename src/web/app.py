@@ -518,8 +518,8 @@ class ChatbotWeb:
         except Exception as e:
             return f"❌ Failed to fetch logs: {str(e)}"
     
-    def restart_model(self) -> Generator[tuple, None, None]:
-        """Restart model with new configuration (with loading status updates)"""
+    def start_model_with_reset(self) -> Generator[tuple, None, None]:
+        """Start model with new configuration (with loading status updates)"""
         # Initial loading message
         loading_status = "🔄 Starting model server..."
         loading_log = "🔄 Restarting model server...\n⏳ This may take 30-90 seconds while the model loads...\n"
@@ -712,7 +712,7 @@ class ChatbotWeb:
 
                     # Model controls section (moved back to left sidebar)
                     gr.Markdown("**Model Controls**")
-                    restart_btn = gr.Button("Start Model with Reset", variant="primary", size="sm")
+                    start_btn = gr.Button("Start Model with Reset", variant="primary", size="sm")
                     start_no_reset_btn = gr.Button("Start Model without Reset", variant="primary", size="sm")
                     down_btn = gr.Button("Stop Model", variant="secondary", size="sm")
                     model_status = gr.Textbox(
@@ -814,8 +814,8 @@ class ChatbotWeb:
             )
 
             # Model control events
-            restart_btn.click(
-                fn=self.restart_model,
+            start_btn.click(
+                fn=self.start_model_with_reset,
                 inputs=[],
                 outputs=[model_status, deploy_log, doc_dropdown]
             )
