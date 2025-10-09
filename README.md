@@ -1,223 +1,192 @@
 # KVCache Chatbot
 
-A multi-turn conversation chatbot with document upload support, featuring a clean separation between frontend (Gradio) and backend (FastAPI).
+A modern multi-turn conversation chatbot with document upload support and KV cache optimization, featuring a clean separation between frontend (Gradio) and backend (FastAPI).
 
-## Features
+## ✨ Key Features
 
 - 💬 **Multi-turn Conversations**: Maintains conversation history for context-aware responses
-- 📄 **Document Upload**: Upload documents and ask questions about their content
+- 📄 **Document Management**: Upload and select documents independently from chat sessions
 - ⚡ **Streaming Responses**: Real-time streaming for better user experience
-- 🔌 **Frontend-Backend Separation**: Clean REST API architecture
-- 🚀 **Extensible Design**: Easy to add new document formats and LLM providers
+- 🚀 **KV Cache Integration**: Optimized document processing with pre-caching
+- 🔧 **Model Management**: Start/stop local model servers with cache control
+- 🔌 **Clean Architecture**: RESTful API with frontend-backend separation
 
-## Architecture
+## 🚀 Quick Start
 
-```
-kvcache_chatbot/
-├── src/
-│   ├── api/              # FastAPI backend
-│   │   ├── main.py       # Main application
-│   │   ├── config.py     # Configuration
-│   │   ├── models.py     # Data models
-│   │   ├── routers/      # API routes
-│   │   │   ├── chat.py   # Chat endpoints
-│   │   │   └── upload.py # File upload endpoints
-│   │   └── services/     # Business logic
-│   │       ├── session_service.py   # Session management
-│   │       ├── document_service.py  # Document processing
-│   │       └── llm_service.py       # LLM integration
-│   └── web/              # Gradio frontend
-│       └── app.py        # Gradio interface
-└── README.md
-```
+### Prerequisites
+- **Python 3.9+** (recommended: Python 3.10+)
+- **uv** package manager (recommended) or pip
+- **Git** (for cloning the repository)
 
-## Prerequisites
+### Installation & Setup
 
-- Python 3.10+
-- Virtual environment activated: `source .venv/bin/activate`
-
-## Installation
-
-### 1. Activate Virtual Environment
-
+**Option A: Using Make (Recommended)**
 ```bash
-source .venv/bin/activate
+git clone <repository-url>
+cd chatbot-for-kvcache-demo
+make start
 ```
 
-### 2. Install Backend Dependencies
-
+**Option B: Using npm**
 ```bash
-cd src/api
-pip install -r requirements.txt
+git clone <repository-url>
+cd chatbot-for-kvcache-demo
+npm start
 ```
 
-### 3. Install Frontend Dependencies
-
+**Option C: Manual setup**
 ```bash
-cd ../web
-pip install -r requirements.txt
+git clone <repository-url>
+cd chatbot-for-kvcache-demo
+uv sync  # or pip install dependencies
+# Terminal 1: cd src/api && python main.py
+# Terminal 2: cd src/web && python app.py --backend-port 8000
 ```
 
-## Running the Application
-
-### Quick Start (Recommended)
-
-**One-command startup for both frontend and backend:**
-
-```bash
-source .venv/bin/activate
-./start.sh
-```
-
-This script will:
-- ✅ Automatically check and install dependencies
-- ✅ Start backend in background (port 8000)
-- ✅ Start frontend in foreground (port 7860)
-- ✅ Press `Ctrl+C` to stop both services
-
-**To stop services:**
-
-```bash
-./stop.sh
-```
-
-Or press `Ctrl+C` in the running terminal
-
-### Manual Start (Alternative)
-
-If you want to start frontend and backend separately:
-
-**Terminal 1 - Backend:**
-```bash
-source .venv/bin/activate
-./start_backend.sh
-```
-
-**Terminal 2 - Frontend:**
-```bash
-source .venv/bin/activate
-./start_frontend.sh
-```
-
-### Access Points
-
+### Access the Application
 - **Frontend**: http://localhost:7860
 - **Backend API**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
-- **Backend Logs**: `logs/backend.log` (when using unified startup)
+- **API Documentation**: http://localhost:8000/docs
 
-## Usage
+## 📚 Documentation
 
-1. **Open the Gradio Interface**: Navigate to http://localhost:7860
-2. **Upload a Document** (optional):
-   - Click "Upload Document" in the right panel
-   - Select a `.txt` file
-   - Click "Upload"
-3. **Start Chatting**:
-   - Type your message in the text box
-   - Enable "Use uploaded document context" if you want answers based on the document
-   - Click "Send" or press Enter
-4. **Multi-turn Conversation**: The chatbot remembers previous messages in the conversation
-5. **Clear Chat**: Click "Clear Chat" to start a new session
+### 🛠️ Installation Guide
+For detailed installation instructions, dependency management, and configuration:
+**[📖 GETTING_STARTED.md](docs/GETTING_STARTED.md)**
 
-## API Endpoints
+### 🎯 Usage Guide
+For comprehensive usage instructions, workflows, and troubleshooting:
+**[📖 QUICK_START.md](docs/QUICK_START.md)**
 
-### Chat Endpoints
+### 🏗️ Architecture Overview
+For system architecture, data flow, and technical details:
+**[📖 ARCHITECTURE.md](docs/ARCHITECTURE.md)**
 
-- `POST /api/v1/chat/message` - Send message (non-streaming)
-- `POST /api/v1/chat/stream` - Send message (streaming with SSE)
-- `GET /api/v1/chat/session/{session_id}` - Get session info
-- `GET /api/v1/chat/history/{session_id}` - Get chat history
-- `DELETE /api/v1/chat/session/{session_id}` - Delete session
+## 🎮 Basic Usage
 
-### Upload Endpoints
+1. **Upload Documents**: Use the left sidebar to upload `.txt` files
+2. **Select Document**: Choose from dropdown to use document context
+3. **Chat**: Type messages and get responses with document context
+4. **Cache Optimization**: Use "Cache" button for faster document processing
+5. **Model Management**: Start/stop model servers from the interface
 
-- `POST /api/v1/upload` - Upload document
-- `DELETE /api/v1/upload/{session_id}` - Delete uploaded document
+## 🔧 Configuration
 
-## Configuration
-
-### LLM API Configuration (Optional)
-
-Create a `.env` file in the `src/api/` directory:
-
+### LLM Configuration (Optional)
+Create a `.env` file in `src/api/`:
 ```env
-# LLM Settings - OpenAI Compatible API
 LLM_MODEL=gpt-3.5-turbo
-LLM_API_KEY=your-openai-api-key-here
+LLM_API_KEY=your-api-key-here
+LLM_BASE_URL=
 LLM_TEMPERATURE=0.7
 LLM_MAX_TOKENS=2000
 ```
 
-**Note:** If you don't configure an API key, the system will use mock responses for testing.
-
-For detailed configuration instructions, see: [LLM_SETUP.md](LLM_SETUP.md)
-
-## Extending the System
-
-### Adding New Document Formats
-
-1. Create a processor in `src/api/services/document_service.py`:
-
-```python
-class PdfProcessor:
-    async def process(self, file_path: Path) -> str:
-        # PDF processing logic
-        pass
-
-# Register the processor
-document_service.register_processor('.pdf', PdfProcessor())
+### Model Server Configuration
+```env
+LLM_SERVER_EXE=path/to/your/model/server
+LLM_SERVER_MODEL_NAME_OR_PATH=path/to/model
+LLM_SERVER_CACHE=path/to/cache/directory
+LLM_SERVER_LOG=path/to/log/directory
 ```
 
-2. Update `ALLOWED_EXTENSIONS` in `config.py`
-3. Update file types in `src/web/app.py` (line with `file_types=[".txt"]`)
+**Note**: Without API configuration, the system uses mock responses for testing.
 
-### Integrating Real LLM (OpenAI Compatible API)
+## 🛠️ Development
 
-The system has built-in OpenAI compatible API support!
+### Project Structure
+```
+src/
+├── api/              # FastAPI backend
+│   ├── main.py       # Main application
+│   ├── config.py     # Configuration
+│   ├── models.py     # Data models
+│   ├── routers/      # API routes
+│   │   ├── document.py    # Document management
+│   │   ├── session.py     # Chat sessions
+│   │   ├── model.py       # Model management
+│   │   └── logs.py        # Log management
+│   └── services/     # Business logic
+│       ├── document_manager.py  # Document storage
+│       ├── session_service.py   # Session management
+│       ├── llm_service.py       # LLM integration
+│       └── model.py             # Model server management
+└── web/              # Gradio frontend
+    └── app.py        # Gradio interface
+```
 
-**Quick Setup:**
+### Available Commands
+```bash
+make start          # Start both frontend and backend
+make stop           # Stop all services
+make install        # Install dependencies
+make test           # Health check
+make clean          # Clean logs and uploads
+```
 
-1. Create a `.env` file in `src/api/`
-2. Add the following configuration:
-   ```env
-   LLM_MODEL=gpt-3.5-turbo
-   LLM_API_KEY=your-openai-api-key-here
-   ```
-3. Restart the backend
+## 🔗 API Endpoints
 
-**Get API Key:**
-- OpenAI: https://platform.openai.com/api-keys
-- Detailed instructions: See [LLM_SETUP.md](LLM_SETUP.md)
+### Document Management
+- `POST /api/v1/documents/upload` - Upload document
+- `POST /api/v1/documents/upload_and_cache` - Upload and cache document
+- `GET /api/v1/documents/list` - List all documents
+- `DELETE /api/v1/documents/{doc_id}` - Delete document
+- `POST /api/v1/documents/cache/{doc_id}` - Cache existing document
 
-**No API key?** The system will use mock responses, suitable for testing.
+### Chat Sessions
+- `GET /api/v1/session/{session_id}` - Get session info
+- `POST /api/v1/session/{session_id}/messages/stream` - Send message (streaming)
+- `GET /api/v1/session/{session_id}/messages` - Get chat history
+- `DELETE /api/v1/session/{session_id}` - Delete session
 
-### Adding Database Storage
+### Model Management
+- `POST /api/v1/model/up/reset` - Start model with reset
+- `POST /api/v1/model/up/without_reset` - Start model without reset
+- `POST /api/v1/model/down` - Stop model
+- `GET /api/v1/model/status` - Get model status
 
-Currently uses in-memory session storage. To add database:
+## 🚨 Troubleshooting
 
-1. Install database driver: `pip install sqlalchemy asyncpg`
-2. Create models in `src/api/database.py`
-3. Update `SessionManager` in `session_service.py` to use database
+### Common Issues
+1. **Port already in use**: `make stop` or `npm run stop`
+2. **Dependencies not installed**: `make install` or `npm run install-deps`
+3. **Permission errors on Windows**: Run as Administrator or use WSL
 
-## Technology Stack
+### Health Check
+```bash
+make test
+# or
+npm test
+```
+
+## 🏗️ Technology Stack
 
 **Backend:**
 - FastAPI - Modern Python web framework
-- Pydantic - Data validation
+- Pydantic - Data validation and serialization
 - Uvicorn - ASGI server
+- httpx - Async HTTP client
 
 **Frontend:**
 - Gradio - ML/AI web interface framework
-- httpx - HTTP client
+- httpx - HTTP client for API communication
 
-## License
+**Development:**
+- uv - Fast Python package manager
+- Make - Cross-platform build automation
+- npm - Node.js package management
+
+## 📄 License
 
 MIT
 
-## Contributing
+## 🤝 Contributing
 
 Contributions are welcome! Please feel free to submit a Pull Request.
 
-# chatbot
-# chatbot
+---
+
+**Need help?** Check out our detailed documentation:
+- **[GETTING_STARTED.md](docs/GETTING_STARTED.md)** - Installation and setup
+- **[QUICK_START.md](docs/QUICK_START.md)** - Usage guide and workflows
+- **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System architecture overview
