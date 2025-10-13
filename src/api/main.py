@@ -41,14 +41,14 @@ async def lifespan(app: FastAPI):
     import os
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
     await session_manager.start_cleanup_task()
-    
+
     # Create model log session with unique ID
     from services.model_log import model_log_service
     log_session = model_log_service.create_session()
     print(f"📝 Model log session created: {log_session.session_id}")
     print(f"   Log file: {log_session.log_file_path}")
     print(f"   llama-server will write logs to this file via --log-file parameter")
-    
+
     # Initialize LLM service with config
     if settings.LLM_API_KEY:
         llm_service.__init__(
@@ -61,15 +61,15 @@ async def lifespan(app: FastAPI):
         print(f"✅ LLM service initialized with model: {settings.LLM_MODEL}")
         print(f"   Base URL: {settings.LLM_BASE_URL}")
         print(f"   API Key: {'***' if settings.LLM_API_KEY else 'None'}")
-        
+
         # Log LLM initialization
         model_log_service.append_log(f"LLM service initialized - Model: {settings.LLM_MODEL}, Base URL: {settings.LLM_BASE_URL}")
     else:
         print("⚠️  No LLM API key provided, using mock responses")
         model_log_service.append_log("LLM service initialized - Using mock responses (no API key)")
-    
+
     yield
-    
+
     # Shutdown
     await session_manager.stop_cleanup_task()
 

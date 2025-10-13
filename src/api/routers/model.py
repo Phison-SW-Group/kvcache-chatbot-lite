@@ -49,7 +49,7 @@ async def start_model_without_reset(request: ModelUpRequest):
     """
     try:
         result = model_server.up(reset=False)
-        
+
         return ModelResponse(
             status=result["status"],
             message=result["message"],
@@ -76,13 +76,13 @@ async def start_model_with_reset(request: ModelUpRequest):
     try:
         # Clear all documents when model is reset
         cleared_count = document_manager.clear_all_documents()
-        
+
         result = model_server.up(reset=True)
-        
+
         # Update message to include document clearing info
         if cleared_count > 0:
             result["message"] += f" (Cleared {cleared_count} document(s) due to model reset)"
-        
+
         return ModelResponse(
             status=result["status"],
             message=result["message"],
@@ -107,7 +107,7 @@ async def stop_model():
     """
     try:
         result = await model_server.down()
-        
+
         return ModelResponse(
             status=result["status"],
             message=result["message"],
@@ -145,7 +145,7 @@ async def check_cache_existence():
     try:
         # TODO HARDCODED: Directly check R:\maestro_phison\prefix_tree.bin
         prefix_tree_file = Path("R:/maestro_phison/prefix_tree.bin")
-        
+
         if prefix_tree_file.exists():
             return {
                 "cache_path": "R:\\",

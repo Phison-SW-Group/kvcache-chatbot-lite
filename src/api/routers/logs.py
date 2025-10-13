@@ -31,13 +31,13 @@ class LogFileInfo(BaseModel):
 async def get_current_session():
     """
     Get current log session information
-    
+
     Returns:
         Current log session details
     """
     if not model_log_service.current_session:
         raise HTTPException(status_code=404, detail="No active log session")
-    
+
     return LogSessionInfo(
         session_id=model_log_service.current_session.session_id,
         log_file_path=model_log_service.current_session.log_file_path,
@@ -52,19 +52,19 @@ async def get_recent_logs(
 ):
     """
     Get recent log lines from current session
-    
+
     Args:
         lines: Number of recent lines to retrieve (default: 100, max: 1000)
         pattern: Optional regex pattern to filter logs (e.g., "\\[MDW\\]\\[Info\\]\\[Runtime\\]")
-        
+
     Returns:
         List of recent log lines (filtered if pattern provided)
     """
     if not model_log_service.current_session:
         raise HTTPException(status_code=404, detail="No active log session")
-    
+
     log_lines = model_log_service.get_recent_logs(lines, pattern)
-    
+
     return {
         "session_id": model_log_service.current_session.session_id,
         "lines_count": len(log_lines),
@@ -80,19 +80,19 @@ async def get_server_logs(
 ):
     """
     Get llama-server logs (actual model server output)
-    
+
     Args:
         lines: Number of recent lines to retrieve (default: 100, max: 1000)
         pattern: Optional regex pattern to filter logs (e.g., "\\[MDW\\]\\[Info\\]\\[Runtime\\]")
-        
+
     Returns:
         List of recent log lines from llama-server (filtered if pattern provided)
     """
     if not model_log_service.current_session:
         raise HTTPException(status_code=404, detail="No active log session")
-    
+
     log_lines = model_log_service.get_server_logs(lines, pattern)
-    
+
     return {
         "session_id": model_log_service.current_session.session_id,
         "lines_count": len(log_lines),
@@ -105,7 +105,7 @@ async def get_server_logs(
 async def list_log_sessions():
     """
     List all log session files
-    
+
     Returns:
         List of all log files with metadata
     """

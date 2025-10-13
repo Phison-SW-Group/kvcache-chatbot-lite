@@ -62,7 +62,7 @@ class ModelServerConfig:
 
 class ModelServer:
     """Cross-platform model server manager"""
-    
+
     def __init__(self):
         self.config = ModelServerConfig.from_env()
         self.process: Optional[subprocess.Popen] = None
@@ -70,11 +70,11 @@ class ModelServer:
         self.status = ModelServerStatus()
         self.log_threads: list = []  # Keep track of log streaming threads
         self.last_reset_mode: Optional[bool] = None  # Track last startup mode (True=reset, False=resume)
-    
+
     def _stream_output_to_log(self, stream, stream_name: str, log_file_path: str):
         """
         Stream subprocess output to both console and log file
-        
+
         Args:
             stream: stdout or stderr stream
             stream_name: Name of the stream for logging
@@ -100,28 +100,28 @@ class ModelServer:
     #     if not self.config.exe:
     #         self.logger.error("LLM_SERVER_EXE not configured")
     #         return False
-            
+
     #     if not self.config.model_path:
     #         self.logger.error("LLM_SERVER_MODEL_NAME_OR_PATH not configured")
     #         return False
-            
+
     #     exe_path = Path(self.config.exe)
     #     if not exe_path.exists():
     #         self.logger.error(f"Server executable not found: {exe_path}")
     #         return False
-            
+
     #     model_path = Path(self.config.model_path)
     #     if not model_path.exists():
     #         self.logger.error(f"Model file not found: {model_path}")
     #         return False
-            
+
     #     return True
-    
+
     def _validate_paths_detailed(self) -> Dict[str, Any]:
         """Validate paths with detailed error information"""
         errors = []
         details = {}
-        
+
         # Check executable path
         if not self.config.exe:
             errors.append("LLM_SERVER_EXE not configured")
@@ -130,7 +130,7 @@ class ModelServer:
             exe_path = Path(self.config.exe)
             details["exe_path"] = str(exe_path)
             details["exe_configured"] = True
-            
+
             if not exe_path.exists():
                 errors.append(f"Server executable not found: {exe_path}")
                 details["exe_exists"] = False
@@ -142,7 +142,7 @@ class ModelServer:
                     details["exe_executable"] = False
                 else:
                     details["exe_executable"] = True
-        
+
         # Check model path
         if not self.config.model_path:
             errors.append("LLM_SERVER_MODEL_NAME_OR_PATH not configured")
@@ -151,7 +151,7 @@ class ModelServer:
             model_path = Path(self.config.model_path)
             details["model_path"] = str(model_path)
             details["model_configured"] = True
-            
+
             if not model_path.exists():
                 errors.append(f"Model file not found: {model_path}")
                 details["model_exists"] = False
@@ -163,7 +163,7 @@ class ModelServer:
                     details["model_readable"] = False
                 else:
                     details["model_readable"] = True
-        
+
         # Check cache path
         if self.config.cache_path:
             cache_path = Path(self.config.cache_path)
@@ -205,7 +205,7 @@ class ModelServer:
                 "message": "All paths validated successfully",
                 "details": details
             }
-    
+
     def _get_server_args(self, reset: bool = True) -> list:
         """Build server command arguments"""
         args = [
@@ -226,7 +226,7 @@ class ModelServer:
             "-lv", str(self.config.log_level)
         ]
         return args
-    
+
     def _is_running(self) -> bool:
         """Check if server process is running"""
         # First check if we have a process reference
@@ -265,26 +265,26 @@ class ModelServer:
         """
         Send CTRL_C event to process using console attachment (Windows only).
         This is the most reliable way to trigger graceful shutdown with prefix_tree.bin saving.
-        
+
         Based on the working implementation from process_manager.py
         """
         if sys.platform != "win32":
             return False
-            
+
         try:
             import ctypes
-            
+
             kernel32 = ctypes.windll.kernel32
             ATTACH_PARENT_PROCESS = -1
-            
+
             self.logger.info(f"Attempting console attach to PID {pid}...")
-            
+
             # Step 1: Free current console attachment
             try:
                 kernel32.FreeConsole()
             except Exception:
                 pass
-            
+
             # Step 2: Attach to target process console
             if not kernel32.AttachConsole(pid):
                 err = ctypes.get_last_error()
@@ -294,11 +294,11 @@ class ModelServer:
                     msg = ""
                 self.logger.warning(f"AttachConsole({pid}) failed, last_error={err} {msg}")
                 return False
-            
+
             try:
                 # Step 3: Ignore CTRL_C in current process to avoid self-interrupt
                 kernel32.SetConsoleCtrlHandler(None, True)
-                
+
                 # Step 4: Send CTRL_C_EVENT (0) to process group
                 # This is equivalent to pressing Ctrl+C in the console
                 sent = kernel32.GenerateConsoleCtrlEvent(0, pid)  # 0 = CTRL_C_EVENT
@@ -317,11 +317,11 @@ class ModelServer:
                     kernel32.AttachConsole(ATTACH_PARENT_PROCESS)
                 except Exception:
                     pass
-                    
+
         except Exception as e:
             self.logger.error(f"Failed to send CTRL_C via console attach: {e}")
             return False
-    
+
     def _is_completion_ready(self) -> bool:
         """Check if chat/completions endpoint is ready (not returning 503)."""
         import json
@@ -393,17 +393,17 @@ class ModelServer:
     def up(self, reset: bool = True) -> Dict[str, Any]:
         """
         Start the model server
-        
+
         Args:
             reset: Whether to reset KV cache (True = reset, False = resume)
-            
+
         Returns:
             Dict with status and message
         """
         try:
             from services.model_log import model_log_service
             model_log_service.append_log(f"Starting model server (reset={reset})...")
-            
+
             # Validate configuration with detailed error messages
             validation_result = self._validate_paths_detailed()
             if not validation_result["valid"]:
@@ -413,11 +413,11 @@ class ModelServer:
                     "message": validation_result["message"],
                     "details": validation_result["details"]
                 }
-            
-            
+
+
             # Store the reset mode for later reference
             self.last_reset_mode = reset
-            
+
             # Stop existing server if running
             if self._is_running():
                 self.logger.info("Stopping existing server process")
@@ -445,7 +445,7 @@ class ModelServer:
 
             self.logger.info(f"Starting server with args: {' '.join(args)}")
             self.logger.info(f"Working directory: {working_dir}")
-            
+
             model_log_service.append_log(f"Server command: {' '.join(args)}")
             model_log_service.append_log(f"Working directory: {working_dir}")
 
@@ -457,7 +457,7 @@ class ModelServer:
                 stderr=subprocess.PIPE,
                 bufsize=1  # Line buffered
             )
-            
+
             # Note: Intentionally NOT using CREATE_NEW_PROCESS_GROUP on Windows
             # to allow the process to receive console control events (Ctrl+C)
 
@@ -469,11 +469,11 @@ class ModelServer:
 
             self.logger.info(f"llama-server started. PID={self.process.pid}")
             model_log_service.append_log(f"llama-server process started. PID={self.process.pid}")
-            
+
             # Start threads to stream stdout and stderr to log file
             # Use model_log_service's current log path
             current_log_path = model_log_service.get_current_log_path() or str(log_path)
-            
+
             stdout_thread = threading.Thread(
                 target=self._stream_output_to_log,
                 args=(self.process.stdout, "stdout", current_log_path),
@@ -484,10 +484,10 @@ class ModelServer:
                 args=(self.process.stderr, "stderr", current_log_path),
                 daemon=True
             )
-            
+
             stdout_thread.start()
             stderr_thread.start()
-            
+
             self.log_threads = [stdout_thread, stderr_thread]
             model_log_service.append_log(f"Logging to: {current_log_path}")
 
@@ -550,7 +550,7 @@ class ModelServer:
                             "hint": "Model may still be loading. Check llama-server log file or try again later."
                         }
                     }
-                
+
         except FileNotFoundError as e:
             error_msg = f"Executable not found: {str(e)}"
             model_log_service.append_log(f"ERROR: {error_msg}")
@@ -585,25 +585,25 @@ class ModelServer:
                     "command": " ".join(args)
                 }
             }
-    
+
     async def down(self) -> Dict[str, Any]:
         """
         Stop the model server
-        
+
         Returns:
             Dict with status and message
         """
         try:
             from services.model_log import model_log_service
             model_log_service.append_log("Stopping model server...")
-            
+
             if not self._is_running():
                 model_log_service.append_log("Server was not running")
                 return {
                     "status": self.status.SUCCESS,
                     "message": "Server was not running"
                 }
-            
+
             # If we have process reference, use it
             if self.process is not None and self.process.poll() is None:
                 pid = self.process.pid
@@ -611,13 +611,13 @@ class ModelServer:
                 model_log_service.append_log(f"Stopping server process (PID: {pid})")
 
                 signal_sent = False
-                
+
                 if sys.platform == "win32":
                     # Windows: Use console attach method to send CTRL_C (most reliable)
                     # This is equivalent to pressing Ctrl+C in the console window
                     self.logger.info("Using console attach method to send CTRL_C...")
                     model_log_service.append_log("Sending CTRL_C via console attachment (equivalent to Ctrl+C)...")
-                    
+
                     if self._send_ctrl_c_via_console_attach(pid):
                         signal_sent = True
                         model_log_service.append_log("✅ CTRL_C sent successfully via console attach")
@@ -639,7 +639,7 @@ class ModelServer:
                         signal_sent = True
                     except Exception as e:
                         self.logger.error(f"Failed to send SIGTERM: {e}")
-                        
+
                 if not signal_sent:
                     error_msg = "Failed to send shutdown signal to process"
                     model_log_service.append_log(f"❌ {error_msg}")
@@ -654,7 +654,7 @@ class ModelServer:
                 try:
                     self.logger.info("Waiting for server to gracefully shutdown (saving KV cache)...")
                     model_log_service.append_log("Waiting for server to gracefully shutdown (saving KV cache)...")
-                    
+
                     # Check if process already terminated
                     if self.process.poll() is not None:
                         self.logger.info("Server already terminated")
@@ -671,14 +671,14 @@ class ModelServer:
                         else:
                             # Timeout reached
                             raise subprocess.TimeoutExpired("", _timeout)
-                        
+
                 except subprocess.TimeoutExpired:
                     # Force kill if graceful shutdown failed
                     self.logger.warning(f"Graceful shutdown timeout after {_timeout}s, force killing process")
                     self.logger.warning("⚠️ This will prevent prefix_tree.bin from being saved!")
                     model_log_service.append_log(f"⚠️ Graceful shutdown timeout after {_timeout}s, force killing process")
                     model_log_service.append_log("⚠️ This will prevent prefix_tree.bin from being saved!")
-                    
+
                     # Force kill the process
                     try:
                         if sys.platform == "win32":
@@ -700,22 +700,22 @@ class ModelServer:
                         model_log_service.append_log(f"❌ Failed to force kill process: {e}")
 
                 self.process = None
-                
+
                 # Check if prefix_tree.bin was created
                 try:
                     cache_path = Path(self.config.cache_path)
                     resume_policy_mode = "reset (0)" if self.last_reset_mode else "resume (1)"
                     model_log_service.append_log(f"Checking for prefix_tree.bin (startup mode was: {resume_policy_mode})...")
-                    
+
                     # llama-server creates maestro_phison subdirectory
                     prefix_tree_file = cache_path / MAESTRO_CACHE_SUBDIR / "prefix_tree.bin"
-                    
+
                     # Fallback: also check directly in cache_path
                     if not prefix_tree_file.exists():
                         prefix_tree_file_alt = cache_path / "prefix_tree.bin"
                         if prefix_tree_file_alt.exists():
                             prefix_tree_file = prefix_tree_file_alt
-                    
+
                     if prefix_tree_file.exists():
                         file_size = prefix_tree_file.stat().st_size
                         self.logger.info(f"✅ prefix_tree.bin found: {prefix_tree_file} ({file_size} bytes)")
@@ -725,7 +725,7 @@ class ModelServer:
                         self.logger.warning(f"⚠️ prefix_tree.bin NOT found at: {prefix_tree_file}")
                         model_log_service.append_log(f"⚠️ prefix_tree.bin NOT found at: {prefix_tree_file}")
                         model_log_service.append_log(f"   Startup mode: {resume_policy_mode}")
-                        
+
                         if self.last_reset_mode:
                             model_log_service.append_log("   ⚠️ Model was started in RESET mode (--kv-cache-resume-policy 0)")
                             model_log_service.append_log("   ⚠️ In reset mode, llama-server may not save prefix_tree.bin")
@@ -764,13 +764,13 @@ class ModelServer:
                         "status": self.status.ERROR,
                         "message": f"Could not find server process on port {self.config.port}"
                     }
-            
+
             model_log_service.append_log("✅ Server stopped successfully")
             return {
                 "status": self.status.SUCCESS,
                 "message": "Server stopped successfully"
             }
-            
+
         except Exception as e:
             self.logger.error(f"Error stopping server: {e}")
             error_msg = f"Failed to stop server: {str(e)}"
@@ -779,11 +779,11 @@ class ModelServer:
                 "status": self.status.ERROR,
                 "message": error_msg
             }
-    
+
     def get_status(self) -> Dict[str, Any]:
         """
         Get server status
-        
+
         Returns:
             Dict with server status information
         """
@@ -792,7 +792,7 @@ class ModelServer:
                 "status": self.status.STOPPED,
                 "message": "Server is not running"
             }
-        
+
         try:
             # Get process info
             process = psutil.Process(self.process.pid)
@@ -821,10 +821,10 @@ if __name__ == "__main__":
     print("=" * 60)
     print("Testing ModelServer.up() with reset=True")
     print("=" * 60)
-    
+
     result = model_server.up(reset=True)
     print(json.dumps(result, indent=2, default=str))
-    
+
     if result["status"] == "success":
         print("\n✅ Model server started successfully!")
         print(f"PID: {result.get('pid')}")
@@ -832,11 +832,11 @@ if __name__ == "__main__":
         print("\nWaiting 5 seconds before checking status...")
         import time
         time.sleep(5)
-        
+
         status = model_server.get_status()
         print("\nStatus check:")
         print(json.dumps(status, indent=2, default=str))
-        
+
         print("\nTest complete. Remember to stop the server manually if needed.")
     else:
         print("\n❌ Failed to start model server")
