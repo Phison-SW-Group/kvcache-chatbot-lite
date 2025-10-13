@@ -57,15 +57,15 @@ class ChatbotClient:
             )
             response.raise_for_status()
             return response.json()
-    
+
     def cache_document(self, doc_id: str) -> dict:
         """
         Cache an already uploaded document in KV Cache
-        
+
         This function triggers KV Cache pre-warming for an existing document:
         1. Retrieve document content from document manager
         2. Run inference with document as system message (max_tokens=2)
-        
+
         This enables prefix matching acceleration for subsequent queries.
         """
         response = self.client.post(
@@ -74,16 +74,16 @@ class ChatbotClient:
         )
         response.raise_for_status()
         return response.json()
-    
+
     def upload_document_and_cache(self, file_path: str) -> dict:
         """
         Upload a document and pre-cache it in KV Cache
-        
+
         This function uploads a document and triggers KV Cache pre-warming:
         1. Upload document
         2. Run inference with document as system message (max_tokens=2)
         3. Restart model server with reset=False to preserve KV Cache
-        
+
         This enables prefix matching acceleration for subsequent queries.
         """
         with open(file_path, 'rb') as f:
@@ -108,13 +108,13 @@ class ChatbotClient:
         response = self.client.delete(f"{self.api_base_url}/documents/{doc_id}")
         response.raise_for_status()
         return response.json()
-    
+
     def get_document_info(self, doc_id: str) -> dict:
         """Get document information including metadata"""
         response = self.client.get(f"{self.api_base_url}/documents/{doc_id}")
         response.raise_for_status()
         return response.json()
-    
+
     def send_message(self, message: str, document_id: Optional[str] = None) -> str:
         """Send a message and get response (non-streaming)"""
         payload = {
@@ -141,7 +141,7 @@ class ChatbotClient:
             json=payload
         ) as response:
             response.raise_for_status()
-            
+
             # Read SSE stream line by line
             for line in response.iter_lines():
                 # Decode bytes to string if necessary
@@ -156,12 +156,12 @@ class ChatbotClient:
                 if line.startswith("data: "):
                     try:
                         data = json.loads(line[6:])  # Remove "data: " prefix
-                        
+
                         # Check for errors
                         if data.get("error"):
                             yield f"Error: {data['error']}"
                             break
-                        
+
                         # Yield chunks until done
                         if not data.get("done"):
                             chunk = data.get("chunk", "")
@@ -180,7 +180,7 @@ class ChatbotClient:
             return []
         response.raise_for_status()
         return response.json().get("messages", [])
-    
+
     def reset_session(self):
         """Reset the session (create new session ID)"""
         try:
@@ -224,22 +224,22 @@ class ChatbotClient:
         response = self.client.get(f"{self.api_base_url}/model/status")
         response.raise_for_status()
         return response.json()
-    
+
     def get_model_logs(self, lines: int = 100, pattern: Optional[str] = None) -> dict:
         """
         Get model server logs with optional pattern filtering
-        
+
         Args:
             lines: Number of recent lines to retrieve
             pattern: Regex pattern to filter logs
-            
+
         Returns:
             Dict with log information
         """
         params = {"lines": lines}
         if pattern:
             params["pattern"] = pattern
-        
+
         response = self.client.get(
             f"{self.api_base_url}/logs/server",
             params=params
@@ -262,7 +262,7 @@ class ChatbotWeb:
     ) -> Generator[Tuple[List[Tuple[str, str]], str, str], None, None]:
         """
         Handle chat interaction
-        
+
         Args:
             message: User message
             history: Chat history
@@ -291,13 +291,13 @@ class ChatbotWeb:
                 full_response += chunk
                 history[-1] = (message, full_response)
                 yield history, "", ""
-            
+
             # After response is complete, fetch and display new logs
             import time
             time.sleep(0.5)  # Wait for logs to be written
             filtered_logs = self.fetch_model_logs()
             yield history, "", filtered_logs
-            
+
         except Exception as e:
             error_msg = f"Error: {str(e)}. Please make sure the backend server is running."
             history[-1] = (message, error_msg)
@@ -319,66 +319,140 @@ class ChatbotWeb:
             return [("Error loading documents", "None")]
 
 
-    def upload_file(self, file) -> Tuple[str, gr.Dropdown, str]:
+    def upload_file(self, files) -> Tuple[str, gr.Dropdown, List[str]]:
         """
-        Handle file upload
+        Handle multiple file uploads
 
         Args:
-            file: Uploaded file object
+            files: List of uploaded file objects
 
         Returns:
-            Status message, updated dropdown, and uploaded document ID
+            Status message, updated dropdown, and list of uploaded document IDs
         """
-        if file is None:
-            return "Please select a file to upload", gr.Dropdown(choices=self.get_document_choices()), None
+        if files is None or len(files) == 0:
+            return "Please select at least one file to upload", gr.Dropdown(choices=self.get_document_choices()), []
 
-        try:
-            result = self.client.upload_document(file.name)
-            msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes"
-            # Refresh dropdown choices and return the doc_id
-            return msg, gr.Dropdown(choices=self.get_document_choices()), result['doc_id']
-        except httpx.HTTPStatusError as e:
-            return f"❌ Upload failed: {e.response.json().get('detail', str(e))}", gr.Dropdown(choices=self.get_document_choices()), None
-        except Exception as e:
-            return f"❌ Upload failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices()), None
+        success_results = []
+        failed_results = []
+        uploaded_doc_ids = []
 
-    def cache_selected_document(self, last_uploaded_doc_id: Optional[str], selected_doc: Optional[str]) -> Tuple[str, str]:
+        # Process each file
+        for file in files:
+            try:
+                result = self.client.upload_document(file.name)
+                success_results.append({
+                    'filename': result['filename'],
+                    'size': result['file_size'],
+                    'doc_id': result['doc_id']
+                })
+                uploaded_doc_ids.append(result['doc_id'])
+            except httpx.HTTPStatusError as e:
+                error_detail = e.response.json().get('detail', str(e))
+                failed_results.append({
+                    'filename': file.name.split('/')[-1],
+                    'error': error_detail
+                })
+            except Exception as e:
+                failed_results.append({
+                    'filename': file.name.split('/')[-1],
+                    'error': str(e)
+                })
+
+        # Build status message
+        msg = ""
+
+        if success_results:
+            msg += f"✅ Successfully uploaded {len(success_results)} file(s):\n"
+            for res in success_results:
+                msg += f"  • {res['filename']} ({res['size']} bytes)\n"
+
+        if failed_results:
+            msg += f"\n❌ Failed to upload {len(failed_results)} file(s):\n"
+            for res in failed_results:
+                msg += f"  • {res['filename']}: {res['error']}\n"
+
+        if not success_results and not failed_results:
+            msg = "No files were processed"
+
+        # Refresh dropdown choices and return all uploaded doc_ids
+        return msg, gr.Dropdown(choices=self.get_document_choices()), uploaded_doc_ids
+
+    def cache_selected_document(self, last_uploaded_doc_ids: Optional[List[str]], selected_doc: Optional[str]) -> Tuple[str, str]:
         """
-        Cache the selected document in KV Cache
-        Priority: last uploaded document > dropdown selected document
-        
+        Cache documents in KV Cache (supports multiple documents)
+        Priority: last uploaded documents > dropdown selected document
+
         Args:
-            last_uploaded_doc_id: ID of the most recently uploaded document
+            last_uploaded_doc_ids: List of IDs from the most recently uploaded documents
             selected_doc: Selected document ID from dropdown
-            
+
         Returns:
             Status message and model logs
         """
-        # Priority: use last uploaded document if available, otherwise use dropdown selection
-        doc_id = last_uploaded_doc_id if last_uploaded_doc_id else selected_doc
-        
-        if not doc_id or doc_id == "None":
-            return "Please upload a document first or select one from the dropdown", ""
-        
-        try:
-            result = self.client.cache_document(doc_id)
-            msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes\n\n🚀 KV Cache is ready for prefix matching!"
-            
-            # Fetch and display new logs after cache operation
-            import time
-            time.sleep(0.5)
-            filtered_logs = self.fetch_model_logs()
-            
-            return msg, filtered_logs
-        except httpx.HTTPStatusError as e:
-            return f"❌ Cache failed: {e.response.json().get('detail', str(e))}", ""
-        except Exception as e:
-            return f"❌ Cache failed: {str(e)}. Please make sure the backend server is running.", ""
+        # Determine which documents to cache
+        doc_ids_to_cache = []
+
+        # Priority: use last uploaded documents if available, otherwise use dropdown selection
+        if last_uploaded_doc_ids and len(last_uploaded_doc_ids) > 0:
+            doc_ids_to_cache = last_uploaded_doc_ids
+        elif selected_doc and selected_doc != "None":
+            doc_ids_to_cache = [selected_doc]
+
+        if not doc_ids_to_cache:
+            return "Please upload documents first or select one from the dropdown", ""
+
+        # Process each document
+        success_results = []
+        failed_results = []
+
+        for doc_id in doc_ids_to_cache:
+            try:
+                result = self.client.cache_document(doc_id)
+                success_results.append({
+                    'filename': result['filename'],
+                    'size': result['file_size'],
+                    'doc_id': doc_id
+                })
+            except httpx.HTTPStatusError as e:
+                error_detail = e.response.json().get('detail', str(e))
+                failed_results.append({
+                    'doc_id': doc_id,
+                    'error': error_detail
+                })
+            except Exception as e:
+                failed_results.append({
+                    'doc_id': doc_id,
+                    'error': str(e)
+                })
+
+        # Build status message
+        msg = ""
+
+        if success_results:
+            msg += f"✅ Successfully cached {len(success_results)} document(s):\n"
+            for res in success_results:
+                msg += f"  • {res['filename']} ({res['size']} bytes)\n"
+            msg += "\n🚀 KV Cache is ready for prefix matching!"
+
+        if failed_results:
+            msg += f"\n❌ Failed to cache {len(failed_results)} document(s):\n"
+            for res in failed_results:
+                msg += f"  • {res['doc_id']}: {res['error']}\n"
+
+        if not success_results and not failed_results:
+            msg = "No documents were processed"
+
+        # Fetch and display new logs after cache operation
+        import time
+        time.sleep(0.5)
+        filtered_logs = self.fetch_model_logs()
+
+        return msg, filtered_logs
 
     def upload_file_and_cache(self, file) -> Tuple[str, gr.Dropdown, str]:
         """
         Handle file upload with KV Cache pre-warming
-        
+
         This function uploads a document and pre-caches it in the model's KV Cache
         by running inference with the document content as system message.
         This enables prefix matching acceleration for subsequent queries.
@@ -395,12 +469,12 @@ class ChatbotWeb:
         try:
             result = self.client.upload_document_and_cache(file.name)
             msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes\n\n🚀 KV Cache is ready for prefix matching!"
-            
+
             # Fetch and display new logs after cache operation
             import time
             time.sleep(0.5)
             filtered_logs = self.fetch_model_logs()
-            
+
             # Refresh dropdown choices
             return msg, gr.Dropdown(choices=self.get_document_choices()), filtered_logs
         except httpx.HTTPStatusError as e:
@@ -409,25 +483,26 @@ class ChatbotWeb:
             return f"❌ Upload and cache failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices()), ""
 
 
-    def clear_chat(self) -> Tuple[List, str, gr.Dropdown]:
+    def clear_chat(self) -> Tuple[List, str, gr.Dropdown, List]:
         """Clear chat history and reset session"""
         self.client.reset_session()
         # Reset dropdown to "None" to prevent using old document context
-        return [], "✓ Chat cleared. New session started.", gr.Dropdown(value="None")
+        # Also clear the last uploaded doc IDs
+        return [], "✓ Chat cleared. New session started.", gr.Dropdown(value="None"), []
 
 
     def refresh_documents(self) -> gr.Dropdown:
         """Refresh document list"""
         return gr.Dropdown(choices=self.get_document_choices())
-    
+
     def on_document_select(self, selected_doc: str, history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
         """
         Handle document selection from dropdown
-        
+
         Args:
             selected_doc: Selected document ID
             history: Current chat history
-        
+
         Returns:
             Updated history with system message (or cleared history)
         """
@@ -438,39 +513,39 @@ class ChatbotWeb:
             # System messages have empty user message and contain "Document Selected"
             if last_user_msg == "" and "📄 **Document Selected:**" in last_bot_msg:
                 history = history[:-1]  # Remove the last system message
-        
+
         # If no document selected, just return history without adding any message
         if not selected_doc or selected_doc == "None":
             return history
-        
+
         try:
             # Get document info with preview
             doc_info = self.client.get_document_info(selected_doc)
-            
+
             # Add system message to chatbot
             system_msg = f"📄 **Document Selected:** {doc_info['filename']}\n"
             system_msg += f"📊 Size: {doc_info['file_size']} bytes"
             if doc_info.get('total_lines'):
                 system_msg += f" | Lines: {doc_info['total_lines']}"
-            
+
             if doc_info.get('content_preview'):
                 system_msg += f"\n\n**Preview:**\n```\n{doc_info['content_preview']}\n```"
                 if doc_info.get('total_lines', 0) > 10:
                     system_msg += "\n_(showing first 10 lines)_"
-            
+
             # Insert system message at the end of history
             new_history = history + [("", system_msg)]
-            
+
             return new_history
-            
+
         except Exception as e:
             error_msg = f"❌ Error loading document: {str(e)}"
             return history + [("", error_msg)]
 
-    def on_page_load(self) -> Tuple[List, str, gr.Dropdown]:
+    def on_page_load(self) -> Tuple[List, str, gr.Dropdown, List]:
         """Handle page load/refresh - create new session and refresh document list"""
         self.client.reset_session()
-        return [], "", gr.Dropdown(choices=self.get_document_choices(), value="None")
+        return [], "", gr.Dropdown(choices=self.get_document_choices(), value="None"), []
 
 
     def fetch_model_logs(self) -> str:
@@ -478,12 +553,12 @@ class ChatbotWeb:
         Fetch filtered model logs using multiple patterns:
         - [MDW][Info][Runtime] (model runtime info)
         - prompt eval time = (prompt processing performance)
-        - eval time = (token generation performance) 
+        - eval time = (token generation performance)
         - total time = (total processing time)
         - slot update_slots: ... Hit token cnt (GPU): (complete slot update line with GPU cache stats)
-        
+
         Only displays the most recent logs to show new activity
-        
+
         Returns:
             Formatted log string
         """
@@ -496,28 +571,28 @@ class ChatbotWeb:
                 r"total time =",                # Total processing time
                 r"slot update_slots:.*Hit token cnt \(GPU\):"  # Complete slot update line with GPU hit count
             ]
-            
+
             # Combine patterns with OR operator
             combined_pattern = "|".join(f"({pattern})" for pattern in patterns)
-            
+
             # Request more lines to filter, but only show the last 20
             result = self.client.get_model_logs(lines=1000, pattern=combined_pattern)
-            
+
             if not result.get('logs'):
                 return "📭 No relevant logs available yet (checking for runtime, performance, slot, and cache hit logs)"
-            
+
             logs = result['logs']
-            
+
             # Only show the most recent 20 lines to focus on new activity
             recent_logs = logs[-20:] if len(logs) > 20 else logs
-            
+
             header = f""
 
             return header + "".join(recent_logs)
-            
+
         except Exception as e:
             return f"❌ Failed to fetch logs: {str(e)}"
-    
+
     def start_model_with_reset(self) -> Generator[tuple, None, None]:
         """Start model with new configuration (with loading status updates)"""
         # Initial loading message
@@ -543,11 +618,11 @@ class ChatbotWeb:
                 log_msg += f"Time: {result['timestamp']}\n"
                 log_msg += "\n🔄 Fetching model server logs...\n"
                 yield status_msg, log_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
-                
+
                 # Wait a moment for logs to be written, then fetch filtered logs
                 import time
                 time.sleep(1)
-                
+
                 # Fetch and display filtered logs
                 filtered_logs = self.fetch_model_logs()
                 yield status_msg, filtered_logs, gr.Dropdown(choices=self.get_document_choices(), value="None")
@@ -626,11 +701,11 @@ class ChatbotWeb:
                 response = self.client.client.get(url)
                 response.raise_for_status()
                 result = response.json()
-                
+
                 debug_msg = f"🔍 DEBUG INFO:\n"
                 debug_msg += f"API URL: {url}\n"
                 debug_msg += f"Response: {json.dumps(result, indent=2)}\n\n"
-                
+
                 if not result.get("prefix_tree_exists", False):
                     error_msg = debug_msg + "❌ prefix_tree.bin not found in cache directory.\n\n💡 Please use 'Start Model with Reset' first to create the cache file."
                     return error_msg, ""
@@ -640,22 +715,22 @@ class ChatbotWeb:
                 error_msg += f"Error: {str(e)}\n\n"
                 error_msg += "❌ Could not check prefix_tree.bin.\n\n💡 Please check backend connection."
                 return error_msg, ""
-            
+
             # If prefix_tree.bin exists, proceed with starting model
             result = self.client.start_model_without_reset()
-            
+
             # Format status message
             status_msg = f"✅ {result['message']}"
             if result.get('pid'):
                 status_msg += f" (PID: {result['pid']})"
             if result.get('port'):
                 status_msg += f" (Port: {result['port']})"
-            
+
             # Fetch updated logs
             logs = self.fetch_model_logs()
-            
+
             return status_msg, logs
-            
+
         except Exception as e:
             error_msg = f"❌ Failed to start model without reset: {str(e)}"
             return error_msg, ""
@@ -663,26 +738,26 @@ class ChatbotWeb:
     def stop_model(self) -> Tuple[str, str]:
         """
         Stop the currently running model
-        
+
         Returns:
             Status message and model logs
         """
         try:
             result = self.client.stop_model()
-            
+
             # Format status message
             if result.get('status') == 'success':
                 status_msg = f"✅ {result['message']}"
             else:
                 status_msg = f"❌ {result['message']}"
-            
+
             # Fetch and display logs after stop operation
             import time
             time.sleep(0.5)
             filtered_logs = self.fetch_model_logs()
-            
+
             return status_msg, filtered_logs
-            
+
         except Exception as e:
             error_msg = f"❌ Failed to stop model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
             return error_msg, ""
@@ -704,6 +779,7 @@ class ChatbotWeb:
                         label="",
                         file_types=[".txt"],
                         type="filepath",
+                        file_count="multiple",
                         height=150
                     )
                     with gr.Row():
@@ -716,8 +792,8 @@ class ChatbotWeb:
                         lines=3,
                         show_label=False
                     )
-                    # Hidden state to track the most recently uploaded document ID
-                    last_uploaded_doc_id = gr.State(value=None)
+                    # Hidden state to track the most recently uploaded document IDs
+                    last_uploaded_doc_ids = gr.State(value=[])
 
                     gr.Markdown("---")
 
@@ -765,12 +841,12 @@ class ChatbotWeb:
                             show_label=False
                         )
                         clear_btn = gr.Button("Clear", variant="secondary", scale=1)
-                    
+
                     # Model logging directly under message input (tighter layout)
                     with gr.Row():
                         gr.Markdown("**📊 Model Logging**", elem_classes="compact-header")
                         refresh_log_btn = gr.Button("🔄 Refresh", variant="secondary", size="sm", scale=0, min_width=100)
-                    
+
                     deploy_log = gr.Textbox(
                         label="",
                         placeholder="Model server logs will appear here...\nClick 'Refresh' to fetch latest logs.",
@@ -793,12 +869,12 @@ class ChatbotWeb:
             upload_btn.click(
                 fn=self.upload_file,
                 inputs=[file_upload],
-                outputs=[upload_status, doc_dropdown, last_uploaded_doc_id]
+                outputs=[upload_status, doc_dropdown, last_uploaded_doc_ids]
             )
-            
+
             upload_cache_btn.click(
                 fn=self.cache_selected_document,
-                inputs=[last_uploaded_doc_id, doc_dropdown],
+                inputs=[last_uploaded_doc_ids, doc_dropdown],
                 outputs=[upload_status, deploy_log]
             )
 
@@ -808,7 +884,7 @@ class ChatbotWeb:
                 inputs=[],
                 outputs=[doc_dropdown]
             )
-            
+
             # Document selection event - show system message in chatbot
             doc_dropdown.change(
                 fn=self.on_document_select,
@@ -820,21 +896,21 @@ class ChatbotWeb:
             clear_btn.click(
                 fn=self.clear_chat,
                 inputs=[],
-                outputs=[chatbot, upload_status, doc_dropdown]
+                outputs=[chatbot, upload_status, doc_dropdown, last_uploaded_doc_ids]
             )
 
             # Handle Gradio Chatbot's built-in clear button (trash icon)
             chatbot.clear(
                 fn=self.clear_chat,
                 inputs=[],
-                outputs=[chatbot, upload_status, doc_dropdown]
+                outputs=[chatbot, upload_status, doc_dropdown, last_uploaded_doc_ids]
             )
 
             # Page load event - reset session on page load/refresh
             demo.load(
                 fn=self.on_page_load,
                 inputs=[],
-                outputs=[chatbot, upload_status, doc_dropdown]
+                outputs=[chatbot, upload_status, doc_dropdown, last_uploaded_doc_ids]
             )
 
             # Model control events
@@ -843,19 +919,19 @@ class ChatbotWeb:
                 inputs=[],
                 outputs=[model_status, deploy_log, doc_dropdown]
             )
-            
+
             start_no_reset_btn.click(
                 fn=self.start_model_without_reset,
                 inputs=[],
                 outputs=[model_status, deploy_log]
             )
-            
+
             down_btn.click(
                 fn=self.stop_model,
                 inputs=[],
                 outputs=[model_status, deploy_log]
             )
-            
+
             # Log refresh event
             refresh_log_btn.click(
                 fn=self.fetch_model_logs,
