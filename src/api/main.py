@@ -2,6 +2,7 @@
 FastAPI main application
 """
 import argparse
+import asyncio
 from dataclasses import dataclass
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,7 @@ from config import settings
 from routers import session, upload, document, model, logs
 from services.session_service import session_manager
 from services.llm_service import llm_service
+from services.model import model_server
 
 
 @dataclass
@@ -142,8 +144,7 @@ if __name__ == "__main__":
     # Register cleanup handler to ensure model server is stopped on exit
     def cleanup_model_server():
         """Ensure model server is stopped when backend exits"""
-        import asyncio
-        from services.model import model_server
+
         if model_server._is_running():
             print("\n🛑 Stopping model server...")
             try:
