@@ -22,17 +22,27 @@ class Settings(BaseSettings):
     # Session settings
     SESSION_TIMEOUT: int = 3600  # 1 hour in seconds
 
-    # LLM settings - OpenAI compatible API
-    LLM_MODEL: Optional[str] = None  # e.g., "gpt-3.5-turbo", "gpt-4"
-    LLM_API_KEY: Optional[str] = None  # Your OpenAI API key
-    LLM_BASE_URL: Optional[str] = None  # Optional: for Azure OpenAI or other compatible APIs
-    LLM_TEMPERATURE: float = 0.7
-    LLM_MAX_TOKENS: int = 2000
-
     LLM_SERVER_EXE: Optional[str] = None
-    LLM_SERVER_MODEL_NAME_OR_PATH: Optional[str] = None
     LLM_SERVER_CACHE: Optional[str] = None
     LLM_SERVER_LOG: Optional[str] = None
+
+    MODEL_NAME_OR_PATH: Optional[str] = None
+    MODEL_SERVING_NAME: Optional[str] = None  # Display name for deployed model. Falls back to MODEL_NAME_OR_PATH if None
+    BASE_URL: Optional[str] = None
+    API_KEY: Optional[str] = None
+    TEMPERATURE: float = 0.7
+    MAX_TOKENS: int = 2000
+
+    def model_post_init(self, __context) -> None:
+        """Automatically compute model display name and validate config after initialization"""
+        # Set the computed display name
+        self.MODEL_SERVING_NAME = self.MODEL_SERVING_NAME or self.MODEL_NAME_OR_PATH
+
+        # Optional: Log configuration status
+        if bool(self.MODEL_NAME_OR_PATH or self.MODEL_SERVING_NAME):
+            print(f"✅ Model configuration valid: {self.MODEL_SERVING_NAME}")
+        else:
+            print("❌ Model configuration incomplete: MODEL_NAME_OR_PATH or MODEL_SERVING_NAME required")
 
     class Config:
         # Use absolute path to .env file (relative to this config.py file)

@@ -50,17 +50,17 @@ async def lifespan(app: FastAPI):
     print(f"   llama-server will write logs to this file via --log-file parameter")
 
     # Initialize LLM service with config
-    if settings.LLM_API_KEY:
+    if settings.API_KEY:
         llm_service.__init__(
-            model=settings.LLM_MODEL,
-            api_key=settings.LLM_API_KEY,
-            base_url=settings.LLM_BASE_URL,
-            temperature=settings.LLM_TEMPERATURE,
-            max_tokens=settings.LLM_MAX_TOKENS
+            model=settings.MODEL_SERVING_NAME,
+            api_key=settings.API_KEY,
+            base_url=settings.BASE_URL,
+            temperature=settings.TEMPERATURE,
+            max_tokens=settings.MAX_TOKENS
         )
-        print(f"✅ LLM service initialized with model: {settings.LLM_MODEL}")
-        print(f"   Base URL: {settings.LLM_BASE_URL}")
-        print(f"   API Key: {'***' if settings.LLM_API_KEY else 'None'}")
+        print(f"✅ LLM service initialized with model: {settings.MODEL_SERVING_NAME}")
+        print(f"   Base URL: {settings.BASE_URL}")
+        print(f"   API Key: {'***' if settings.API_KEY else 'None'}")
 
         # Log LLM initialization
         model_log_service.append_log(f"LLM service initialized - Model: {settings.LLM_MODEL}, Base URL: {settings.LLM_BASE_URL}")

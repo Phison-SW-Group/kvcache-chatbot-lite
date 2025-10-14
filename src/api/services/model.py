@@ -41,6 +41,7 @@ class ModelServerConfig:
     model_path: str
     cache_path: str
     log_path: str
+    alias: Optional[str] = None
     port: int = 13141
     host: str = "0.0.0.0"
     context_size: int = 16384
@@ -54,9 +55,10 @@ class ModelServerConfig:
         """Create config from environment variables"""
         return cls(
             exe=settings.LLM_SERVER_EXE or "",
-            model_path=settings.LLM_SERVER_MODEL_NAME_OR_PATH or "",
             cache_path=settings.LLM_SERVER_CACHE or "",
-            log_path=settings.LLM_SERVER_LOG or ""
+            log_path=settings.LLM_SERVER_LOG or "",
+            model_path=settings.MODEL_NAME_OR_PATH or "",
+            alias=settings.MODEL_SERVING_NAME or "",
         )
 
 
@@ -102,7 +104,7 @@ class ModelServer:
     #         return False
 
     #     if not self.config.model_path:
-    #         self.logger.error("LLM_SERVER_MODEL_NAME_OR_PATH not configured")
+    #         self.logger.error("MODEL_NAME_OR_PATH not configured")
     #         return False
 
     #     exe_path = Path(self.config.exe)
@@ -145,7 +147,7 @@ class ModelServer:
 
         # Check model path
         if not self.config.model_path:
-            errors.append("LLM_SERVER_MODEL_NAME_OR_PATH not configured")
+            errors.append("MODEL_NAME_OR_PATH not configured")
             details["model_configured"] = False
         else:
             model_path = Path(self.config.model_path)
@@ -211,6 +213,7 @@ class ModelServer:
         args = [
             str(self.config.exe),
             "-m", str(self.config.model_path),
+            "-a", str(self.config.alias),
             "-e", "-s", "0",
             "--host", self.config.host,
             "-c", str(self.config.context_size),
