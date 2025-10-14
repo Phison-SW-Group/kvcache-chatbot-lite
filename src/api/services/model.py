@@ -51,14 +51,14 @@ class ModelServerConfig:
     log_level: int = 9
 
     @classmethod
-    def from_env(cls):
+    def from_settings(cls):
         """Create config from environment variables"""
         return cls(
-            exe=settings.LLM_SERVER_EXE or "",
-            cache_path=settings.LLM_SERVER_CACHE or "",
-            log_path=settings.LLM_SERVER_LOG or "",
-            model_path=settings.MODEL_NAME_OR_PATH or "",
-            alias=settings.MODEL_SERVING_NAME or "",
+            exe=settings.server.exe_path or "",
+            cache_path=settings.server.cache_dir or "",
+            log_path=settings.server.log_path or "",
+            model_path=settings.models[0].model_name_or_path or "",
+            alias=settings.models[0].serving_name or "",
         )
 
 
@@ -66,7 +66,7 @@ class ModelServer:
     """Cross-platform model server manager"""
 
     def __init__(self):
-        self.config = ModelServerConfig.from_env()
+        self.config = ModelServerConfig.from_settings()
         self.process: Optional[subprocess.Popen] = None
         self.logger = logging.getLogger(__name__)
         self.status = ModelServerStatus()

@@ -41,7 +41,7 @@ async def lifespan(app: FastAPI):
     """Lifecycle manager for startup and shutdown events"""
     # Startup
     import os
-    os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+    os.makedirs(settings.documents.upload_dir, exist_ok=True)
     await session_manager.start_cleanup_task()
 
     # Create model log session with unique ID
@@ -52,20 +52,17 @@ async def lifespan(app: FastAPI):
     print(f"   llama-server will write logs to this file via --log-file parameter")
 
     # Initialize LLM service with config
-    if settings.API_KEY:
+    if settings.completion_params.api_key:
         llm_service.__init__(
-            model=settings.MODEL_SERVING_NAME,
-            api_key=settings.API_KEY,
-            base_url=settings.BASE_URL,
-            temperature=settings.TEMPERATURE,
-            max_tokens=settings.MAX_TOKENS
+            model=settings.models[0].serving_name,
+            **settings.completion_params.model_dump()
         )
-        print(f"✅ LLM service initialized with model: {settings.MODEL_SERVING_NAME}")
-        print(f"   Base URL: {settings.BASE_URL}")
-        print(f"   API Key: {'***' if settings.API_KEY else 'None'}")
+        print(f"✅ LLM service initialized with model: {settings.models[0].serving_name}")
+        print(f"   Base URL: {settings.completion_params.base_url}")
+        print(f"   API Key: {'***' if settings.completion_params.api_key else 'None'}")
 
         # Log LLM initialization
-        model_log_service.append_log(f"LLM service initialized - Model: {settings.MODEL_SERVING_NAME}, Base URL: {settings.BASE_URL}")
+        model_log_service.append_log(f"LLM service initialized - Model: {settings.models[0].serving_name}, Base URL: {settings.completion_params.base_url}")
     else:
         print("⚠️  No LLM API key provided, using mock responses")
         model_log_service.append_log("LLM service initialized - Using mock responses (no API key)")
@@ -86,8 +83,8 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = FastAPI(
-    title=settings.API_TITLE,
-    version=settings.API_VERSION,
+    title=settings.api.title,
+    version=settings.api.version,
     lifespan=lifespan
 )
 
@@ -101,11 +98,11 @@ app.add_middleware(
 )
 
 # Include routers
-app.include_router(session.router, prefix=settings.API_PREFIX)
-app.include_router(upload.router, prefix=settings.API_PREFIX)  # Legacy
-app.include_router(document.router, prefix=settings.API_PREFIX)  # New independent documents
-app.include_router(model.router, prefix=settings.API_PREFIX)  # Model deployment
-app.include_router(logs.router, prefix=settings.API_PREFIX)  # Model logs
+app.include_router(session.router, prefix=settings.api.prefix)
+app.include_router(upload.router, prefix=settings.api.prefix)  # Legacy
+app.include_router(document.router, prefix=settings.api.prefix)  # New independent documents
+app.include_router(model.router, prefix=settings.api.prefix)  # Model deployment
+app.include_router(logs.router, prefix=settings.api.prefix)  # Model logs
 
 
 @app.get("/")
@@ -113,18 +110,18 @@ async def root():
     """Root endpoint"""
     return {
         "message": "KVCache Chatbot API",
-        "version": settings.API_VERSION,
+        "version": settings.api.version,
         "endpoints": {
             "docs": "/docs",
-            "session": f"{settings.API_PREFIX}/session/{{session_id}}",
-            "messages": f"{settings.API_PREFIX}/session/{{session_id}}/messages",
-            "documents": f"{settings.API_PREFIX}/documents",
-            "upload_document": f"{settings.API_PREFIX}/documents/upload",
-            "cache_document": f"{settings.API_PREFIX}/documents/cache/{{doc_id}}",
-            "model": f"{settings.API_PREFIX}/model",
-            "logs": f"{settings.API_PREFIX}/logs/current",
-            "logs_recent": f"{settings.API_PREFIX}/logs/recent",
-            "logs_sessions": f"{settings.API_PREFIX}/logs/sessions"
+            "session": f"{settings.api.prefix}/session/{{session_id}}",
+            "messages": f"{settings.api.prefix}/session/{{session_id}}/messages",
+            "documents": f"{settings.api.prefix}/documents",
+            "upload_document": f"{settings.api.prefix}/documents/upload",
+            "cache_document": f"{settings.api.prefix}/documents/cache/{{doc_id}}",
+            "model": f"{settings.api.prefix}/model",
+            "logs": f"{settings.api.prefix}/logs/current",
+            "logs_recent": f"{settings.api.prefix}/logs/recent",
+            "logs_sessions": f"{settings.api.prefix}/logs/sessions"
         }
     }
 

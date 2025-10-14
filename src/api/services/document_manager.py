@@ -223,5 +223,5 @@ class DocumentManager:
 
 
 # Global document manager instance
-document_manager = DocumentManager(upload_dir=settings.UPLOAD_DIR)
+document_manager = DocumentManager(upload_dir=settings.documents.upload_dir)
 

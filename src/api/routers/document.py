@@ -20,7 +20,7 @@ router = APIRouter(prefix="/documents", tags=["documents"])
 
 
 # Ensure upload directory exists
-os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
+os.makedirs(settings.documents.upload_dir, exist_ok=True)
 
 
 @router.post("/upload", response_model=DocumentUploadResponse)
@@ -33,28 +33,28 @@ async def upload_document(file: UploadFile = File(...)):
     # Validate file extension
     file_extension = Path(file.filename).suffix.lower()
 
-    if file_extension not in settings.ALLOWED_EXTENSIONS:
+    if file_extension not in settings.documents.allowed_extensions:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type: {file_extension}. "
-                   f"Allowed types: {', '.join(settings.ALLOWED_EXTENSIONS)}"
+                   f"Allowed types: {', '.join(settings.documents.allowed_extensions)}"
         )
 
     # Check file size
     file_content = await file.read()
     file_size = len(file_content)
 
-    if file_size > settings.MAX_FILE_SIZE:
+    if file_size > settings.documents.max_file_size:
         raise HTTPException(
             status_code=400,
-            detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE / (1024*1024):.1f}MB"
+            detail=f"File too large. Maximum size: {settings.documents.max_file_size / (1024*1024):.1f}MB"
         )
 
     # Generate unique filename
     import uuid
     unique_id = str(uuid.uuid4())[:8]
     safe_filename = f"{unique_id}_{file.filename}"
-    file_path = Path(settings.UPLOAD_DIR) / safe_filename
+    file_path = Path(settings.documents.upload_dir) / safe_filename
 
     try:
         # Save file
@@ -227,28 +227,28 @@ async def upload_document_and_cache(file: UploadFile = File(...)):
     # Validate file extension
     file_extension = Path(file.filename).suffix.lower()
 
-    if file_extension not in settings.ALLOWED_EXTENSIONS:
+    if file_extension not in settings.documents.allowed_extensions:
         raise HTTPException(
             status_code=400,
             detail=f"Unsupported file type: {file_extension}. "
-                   f"Allowed types: {', '.join(settings.ALLOWED_EXTENSIONS)}"
+                   f"Allowed types: {', '.join(settings.documents.allowed_extensions)}"
         )
 
     # Check file size
     file_content = await file.read()
     file_size = len(file_content)
 
-    if file_size > settings.MAX_FILE_SIZE:
+    if file_size > settings.documents.max_file_size:
         raise HTTPException(
             status_code=400,
-            detail=f"File too large. Maximum size: {settings.MAX_FILE_SIZE / (1024*1024):.1f}MB"
+            detail=f"File too large. Maximum size: {settings.documents.max_file_size / (1024*1024):.1f}MB"
         )
 
     # Generate unique filename
     import uuid
     unique_id = str(uuid.uuid4())[:8]
     safe_filename = f"{unique_id}_{file.filename}"
-    file_path = Path(settings.UPLOAD_DIR) / safe_filename
+    file_path = Path(settings.documents.upload_dir) / safe_filename
 
     try:
         # Save file
