@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
         print(f"   API Key: {'***' if settings.API_KEY else 'None'}")
 
         # Log LLM initialization
-        model_log_service.append_log(f"LLM service initialized - Model: {settings.LLM_MODEL}, Base URL: {settings.LLM_BASE_URL}")
+        model_log_service.append_log(f"LLM service initialized - Model: {settings.MODEL_SERVING_NAME}, Base URL: {settings.BASE_URL}")
     else:
         print("⚠️  No LLM API key provided, using mock responses")
         model_log_service.append_log("LLM service initialized - Using mock responses (no API key)")
