@@ -803,13 +803,14 @@ class ChatbotWeb:
         with gr.Blocks(title="KVCache Chatbot", theme=gr.themes.Soft()) as demo:
             gr.Markdown("# 🤖 KVCache Chatbot")
 
+            # Top row - Document (left) and Chat (right)
             with gr.Row():
-                # Left sidebar - Document management
+                # Left top - Document management
                 with gr.Column(scale=1):
-                    gr.Markdown("### 📄 Document Management")
+                    # gr.Markdown("### 📄 Document Management")
 
                     # Upload section
-                    gr.Markdown("**Upload Document**")
+                    gr.Markdown("**📤 Upload** Document(s)")
                     file_upload = gr.File(
                         label="",
                         file_types=[".txt"],
@@ -830,10 +831,10 @@ class ChatbotWeb:
                     # Hidden state to track the most recently uploaded document IDs
                     last_uploaded_doc_ids = gr.State(value=[])
 
-                    gr.Markdown("---")
+                    # gr.Markdown("---")
 
                     # Document selector section
-                    gr.Markdown("**Select Document**")
+                    gr.Markdown("**📋 Select** Document(s)")
                     doc_dropdown = gr.Dropdown(
                         choices=[("No document selected", "None")],
                         value="None",
@@ -843,40 +844,13 @@ class ChatbotWeb:
                     )
                     refresh_btn = gr.Button("Refresh List", size="sm")
 
-                    gr.Markdown("---")
-
-                    # Model controls section (moved back to left sidebar)
-                    gr.Markdown("**Model Controls**")
-
-                    # Model selector
-                    gr.Markdown("**Select Model**")
-                    model_dropdown = gr.Dropdown(
-                        choices=[("Select a model", "None")],
-                        value="None",
-                        label="",
-                        show_label=False,
-                        interactive=True
-                    )
-                    refresh_model_btn = gr.Button("Refresh Models", size="sm")
-
-                    gr.Markdown("**Control Actions**")
-                    with gr.Row():
-                        start_btn = gr.Button("Start with Reset", variant="primary", size="sm")
-                        start_no_reset_btn = gr.Button("Start without Reset", variant="primary", size="sm")
-                    down_btn = gr.Button("Stop Model", variant="secondary", size="sm")
-                    model_status = gr.Textbox(
-                        label="Model Status",
-                        placeholder="Model status...",
-                        lines=3,
-                        interactive=False,
-                        show_label=False
-                    )
-
-                # Main chat area
+                # Right top - Chat area
                 with gr.Column(scale=3):
+                    gr.Markdown("**💬 Chatbot**")
+
                     chatbot = gr.Chatbot(
                         label="Chat",
-                        height=400,
+                        height=450,
                         show_copy_button=True
                     )
 
@@ -889,19 +863,46 @@ class ChatbotWeb:
                             lines=1,
                             show_label=False
                         )
-                        clear_btn = gr.Button("Clear", variant="secondary", scale=1)
+                        clear_btn = gr.Button("Clear", variant="secondary", scale=1, size="md", min_width=80)
 
-                    # Model logging directly under message input (tighter layout)
-                    with gr.Row():
-                        gr.Markdown("**📊 Model Logging**", elem_classes="compact-header")
-                        refresh_log_btn = gr.Button("🔄 Refresh", variant="secondary", size="sm", scale=0, min_width=100)
+            # Bottom row - Model controls (left) and Model logging (right)
+            with gr.Row():
+                # Left bottom - Model controls
+                with gr.Column(scale=1):
+                    gr.Markdown("**🤖 Model**")
 
+                    # Model selector
+                    model_dropdown = gr.Dropdown(
+                        choices=[("Select a model", "None")],
+                        value="None",
+                        label="",
+                        show_label=False,
+                        interactive=True
+                    )
+
+                    # Model control buttons (vertical stack)
+                    start_btn = gr.Button("Start with Reset", variant="primary", size="sm")
+                    start_no_reset_btn = gr.Button("Start without Reset", variant="primary", size="sm")
+                    down_btn = gr.Button("Stop Model", variant="secondary", size="sm")
+
+                    # Model status display
+                    model_status = gr.Textbox(
+                        label="",
+                        placeholder="Model status...",
+                        lines=3,
+                        interactive=False,
+                        show_label=False
+                    )
+
+                # Right bottom - Model logging
+                with gr.Column(scale=3):
+                    gr.Markdown("**📊 Logging**")
                     deploy_log = gr.Textbox(
                         label="",
-                        placeholder="Model server logs will appear here...\nClick 'Refresh' to fetch latest logs.",
-                        lines=5,
+                        placeholder="Model server logs will appear here...",
+                        lines=13.2,
                         interactive=False,
-                        max_lines=15,
+                        max_lines=20,
                         show_copy_button=True,
                         show_label=False
                     )
@@ -962,13 +963,6 @@ class ChatbotWeb:
                 outputs=[chatbot, upload_status, doc_dropdown, last_uploaded_doc_ids, model_dropdown]
             )
 
-            # Model management events
-            refresh_model_btn.click(
-                fn=self.refresh_models,
-                inputs=[],
-                outputs=[model_dropdown]
-            )
-
             # Model control events
             start_btn.click(
                 fn=self.start_model_with_reset,
@@ -986,13 +980,6 @@ class ChatbotWeb:
                 fn=self.stop_model,
                 inputs=[],
                 outputs=[model_status, deploy_log]
-            )
-
-            # Log refresh event
-            refresh_log_btn.click(
-                fn=self.fetch_model_logs,
-                inputs=[],
-                outputs=[deploy_log]
             )
 
         return demo
