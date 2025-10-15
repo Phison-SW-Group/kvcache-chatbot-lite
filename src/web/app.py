@@ -189,9 +189,15 @@ class ChatbotClient:
             pass
         self.session_id = str(uuid.uuid4())
 
-    def start_model_without_reset(self, model_name: str = None) -> dict:
+    def list_models(self) -> list:
+        """Get list of all configured models"""
+        response = self.client.get(f"{self.api_base_url}/model/list")
+        response.raise_for_status()
+        return response.json()
+
+    def start_model_without_reset(self, serving_name: str = None) -> dict:
         """Start model without resetting configuration"""
-        payload = {"model_name": model_name} if model_name else {}
+        payload = {"serving_name": serving_name} if serving_name else {}
         # Use longer timeout for model startup (can take 1-2 minutes to load)
         response = self.client.post(
             f"{self.api_base_url}/model/up/without_reset",
@@ -201,9 +207,9 @@ class ChatbotClient:
         response.raise_for_status()
         return response.json()
 
-    def start_model_with_reset(self, model_name: str = None) -> dict:
+    def start_model_with_reset(self, serving_name: str = None) -> dict:
         """Start model with reset (restart with new configuration)"""
-        payload = {"model_name": model_name} if model_name else {}
+        payload = {"serving_name": serving_name} if serving_name else {}
         # Use longer timeout for model startup (can take 1-2 minutes to load)
         response = self.client.post(
             f"{self.api_base_url}/model/up/reset",
@@ -317,6 +323,21 @@ class ChatbotWeb:
         except Exception as e:
             print(f"Error fetching documents: {e}")
             return [("Error loading documents", "None")]
+
+    def get_model_choices(self) -> List[Tuple[str, str]]:
+        """Get list of models for dropdown"""
+        try:
+            models = self.client.list_models()
+            if not models:
+                return [("No models configured", "None")]
+            choices = [("Select a model", "None")]
+            for model in models:
+                # Display serving_name, use serving_name as value
+                choices.append((model['serving_name'], model['serving_name']))
+            return choices
+        except Exception as e:
+            print(f"Error fetching models: {e}")
+            return [("Error loading models", "None")]
 
 
     def upload_file(self, files) -> Tuple[str, gr.Dropdown, List[str]]:
@@ -495,6 +516,10 @@ class ChatbotWeb:
         """Refresh document list"""
         return gr.Dropdown(choices=self.get_document_choices())
 
+    def refresh_models(self) -> gr.Dropdown:
+        """Refresh model list"""
+        return gr.Dropdown(choices=self.get_model_choices())
+
     def on_document_select(self, selected_doc: str, history: List[Tuple[str, str]]) -> List[Tuple[str, str]]:
         """
         Handle document selection from dropdown
@@ -542,10 +567,10 @@ class ChatbotWeb:
             error_msg = f"❌ Error loading document: {str(e)}"
             return history + [("", error_msg)]
 
-    def on_page_load(self) -> Tuple[List, str, gr.Dropdown, List]:
-        """Handle page load/refresh - create new session and refresh document list"""
+    def on_page_load(self) -> Tuple[List, str, gr.Dropdown, List, gr.Dropdown]:
+        """Handle page load/refresh - create new session and refresh document and model lists"""
         self.client.reset_session()
-        return [], "", gr.Dropdown(choices=self.get_document_choices(), value="None"), []
+        return [], "", gr.Dropdown(choices=self.get_document_choices(), value="None"), [], gr.Dropdown(choices=self.get_model_choices(), value="None")
 
 
     def fetch_model_logs(self) -> str:
@@ -593,15 +618,21 @@ class ChatbotWeb:
         except Exception as e:
             return f"❌ Failed to fetch logs: {str(e)}"
 
-    def start_model_with_reset(self) -> Generator[tuple, None, None]:
+    def start_model_with_reset(self, selected_model: Optional[str]) -> Generator[tuple, None, None]:
         """Start model with new configuration (with loading status updates)"""
+        # Check if a model is selected
+        if not selected_model or selected_model == "None":
+            error_msg = "❌ Please select a model first"
+            yield error_msg, error_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
+            return
+
         # Initial loading message
-        loading_status = "🔄 Starting model server..."
-        loading_log = "🔄 Restarting model server...\n⏳ This may take 30-90 seconds while the model loads...\n"
+        loading_status = f"🔄 Starting model: {selected_model}..."
+        loading_log = f"🔄 Starting model server with: {selected_model}\n⏳ This may take 30-90 seconds while the model loads...\n"
         yield loading_status, loading_log, gr.Dropdown(choices=self.get_document_choices(), value="None")
 
         try:
-            result = self.client.start_model_with_reset()
+            result = self.client.start_model_with_reset(serving_name=selected_model)
 
             # Format status message for model_status display
             if result.get('status') == 'success':
@@ -689,11 +720,15 @@ class ChatbotWeb:
             traceback.print_exc()
             return False
 
-    def start_model_without_reset(self) -> Tuple[str, str]:
+    def start_model_without_reset(self, selected_model: Optional[str]) -> Tuple[str, str]:
         """
         Start model without resetting configuration
         Checks for prefix_tree.bin before making API call
         """
+        # Check if a model is selected
+        if not selected_model or selected_model == "None":
+            return "❌ Please select a model first", ""
+
         try:
             # First check if prefix_tree.bin exists
             url = f"{self.client.api_base_url}/model/check_cache_existence"
@@ -717,7 +752,7 @@ class ChatbotWeb:
                 return error_msg, ""
 
             # If prefix_tree.bin exists, proceed with starting model
-            result = self.client.start_model_without_reset()
+            result = self.client.start_model_without_reset(serving_name=selected_model)
 
             # Format status message
             status_msg = f"✅ {result['message']}"
@@ -812,8 +847,22 @@ class ChatbotWeb:
 
                     # Model controls section (moved back to left sidebar)
                     gr.Markdown("**Model Controls**")
-                    start_btn = gr.Button("Start Model with Reset", variant="primary", size="sm")
-                    start_no_reset_btn = gr.Button("Start Model without Reset", variant="primary", size="sm")
+
+                    # Model selector
+                    gr.Markdown("**Select Model**")
+                    model_dropdown = gr.Dropdown(
+                        choices=[("Select a model", "None")],
+                        value="None",
+                        label="",
+                        show_label=False,
+                        interactive=True
+                    )
+                    refresh_model_btn = gr.Button("Refresh Models", size="sm")
+
+                    gr.Markdown("**Control Actions**")
+                    with gr.Row():
+                        start_btn = gr.Button("Start with Reset", variant="primary", size="sm")
+                        start_no_reset_btn = gr.Button("Start without Reset", variant="primary", size="sm")
                     down_btn = gr.Button("Stop Model", variant="secondary", size="sm")
                     model_status = gr.Textbox(
                         label="Model Status",
@@ -910,19 +959,26 @@ class ChatbotWeb:
             demo.load(
                 fn=self.on_page_load,
                 inputs=[],
-                outputs=[chatbot, upload_status, doc_dropdown, last_uploaded_doc_ids]
+                outputs=[chatbot, upload_status, doc_dropdown, last_uploaded_doc_ids, model_dropdown]
+            )
+
+            # Model management events
+            refresh_model_btn.click(
+                fn=self.refresh_models,
+                inputs=[],
+                outputs=[model_dropdown]
             )
 
             # Model control events
             start_btn.click(
                 fn=self.start_model_with_reset,
-                inputs=[],
+                inputs=[model_dropdown],
                 outputs=[model_status, deploy_log, doc_dropdown]
             )
 
             start_no_reset_btn.click(
                 fn=self.start_model_without_reset,
-                inputs=[],
+                inputs=[model_dropdown],
                 outputs=[model_status, deploy_log]
             )
 

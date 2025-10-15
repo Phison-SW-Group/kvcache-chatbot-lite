@@ -160,19 +160,9 @@ class Settings(BaseSettings):
                     ) for model in models_data
                 ]
 
-            # Load completion settings (support 'completion_params', 'completion', and legacy 'inference_params')
-            completion_data = None
+            # Load completion settings
             if 'completion_params' in yaml_data:
                 completion_data = yaml_data['completion_params']
-                print("📝 Using 'completion_params' configuration section")
-            elif 'completion' in yaml_data:
-                completion_data = yaml_data['completion']
-                print("📝 Using 'completion' configuration section (consider migrating to 'completion_params')")
-            elif 'inference_params' in yaml_data:
-                completion_data = yaml_data['inference_params']
-                print("📝 Using legacy 'inference_params' configuration section (consider migrating to 'completion_params')")
-
-            if completion_data:
                 # Create completion settings with all parameters from YAML
                 completion_kwargs = {}
 
@@ -193,7 +183,7 @@ class Settings(BaseSettings):
                     completion_kwargs['custom_params'] = custom_params
 
                 # Create the settings instance
-                self.completion = CompletionSettings(**completion_kwargs)
+                self.completion_params = CompletionSettings(**completion_kwargs)
 
             print("✅ YAML configuration loaded successfully")
 
@@ -232,22 +222,22 @@ class Settings(BaseSettings):
     @property
     def BASE_URL(self) -> Optional[str]:
         """Get completion base URL for backward compatibility"""
-        return self.completion.base_url
+        return self.completion_params.base_url
 
     @property
     def API_KEY(self) -> Optional[str]:
         """Get completion API key for backward compatibility"""
-        return self.completion.api_key
+        return self.completion_params.api_key
 
     @property
     def TEMPERATURE(self) -> float:
         """Get completion temperature for backward compatibility"""
-        return self.completion.temperature
+        return self.completion_params.temperature
 
     @property
     def MAX_TOKENS(self) -> int:
         """Get completion max tokens for backward compatibility"""
-        return self.completion.max_tokens
+        return self.completion_params.max_tokens
 
     # Document settings backward compatibility
     @property

@@ -4,12 +4,13 @@ Handles model startup, restart, and shutdown operations
 """
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 from pathlib import Path
 
 from services.model import model_server
 from services.document_manager import document_manager
+from config import settings
 
 router = APIRouter(prefix="/model", tags=["model"])
 
@@ -26,7 +27,7 @@ def get_prefix_tree_path(cache_path: Path) -> Path:
 
 class ModelUpRequest(BaseModel):
     """Request model for model startup operations"""
-    model_name: Optional[str] = None
+    serving_name: Optional[str] = None
     config: Optional[dict] = None
 
 
@@ -42,19 +43,45 @@ class ModelResponse(BaseModel):
     details: Optional[dict] = None
 
 
+class ModelInfo(BaseModel):
+    """Model information"""
+    model_name_or_path: str
+    serving_name: str
+
+
+@router.get("/list")
+async def list_models() -> List[ModelInfo]:
+    """
+    Get list of all configured models from settings
+    """
+    try:
+        models = []
+        for model_config in settings.models:
+            models.append(ModelInfo(
+                model_name_or_path=model_config.model_name_or_path,
+                serving_name=model_config.serving_name
+            ))
+        return models
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to list models: {str(e)}"
+        )
+
+
 @router.post("/up/without_reset", response_model=ModelResponse)
 async def start_model_without_reset(request: ModelUpRequest):
     """
     Start model without resetting existing configuration
     """
     try:
-        result = model_server.up(reset=False)
+        result = model_server.up(reset=False, serving_name=request.serving_name)
 
         return ModelResponse(
             status=result["status"],
             message=result["message"],
             timestamp=datetime.now(),
-            model_name=request.model_name,
+            model_name=request.serving_name,
             pid=result.get("pid"),
             port=result.get("port"),
             command=result.get("command"),
@@ -77,7 +104,7 @@ async def start_model_with_reset(request: ModelUpRequest):
         # Clear all documents when model is reset
         cleared_count = document_manager.clear_all_documents()
 
-        result = model_server.up(reset=True)
+        result = model_server.up(reset=True, serving_name=request.serving_name)
 
         # Update message to include document clearing info
         if cleared_count > 0:
@@ -87,7 +114,7 @@ async def start_model_with_reset(request: ModelUpRequest):
             status=result["status"],
             message=result["message"],
             timestamp=datetime.now(),
-            model_name=request.model_name,
+            model_name=request.serving_name,
             pid=result.get("pid"),
             port=result.get("port"),
             command=result.get("command"),

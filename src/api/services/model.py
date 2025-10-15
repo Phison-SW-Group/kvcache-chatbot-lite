@@ -51,14 +51,36 @@ class ModelServerConfig:
     log_level: int = 9
 
     @classmethod
-    def from_settings(cls):
-        """Create config from environment variables"""
+    def from_settings(cls, serving_name: Optional[str] = None):
+        """
+        Create config from environment variables
+
+        Args:
+            serving_name: Optional serving name to select specific model.
+                         If None, uses the first model in config.
+        """
+        # Find the model by serving_name, or use first model if not specified
+        selected_model = None
+        if serving_name:
+            for model in settings.models:
+                if model.serving_name == serving_name:
+                    selected_model = model
+                    break
+            if not selected_model:
+                raise ValueError(f"Model with serving_name '{serving_name}' not found in configuration")
+        else:
+            # Default to first model
+            selected_model = settings.models[0] if settings.models else None
+
+        if not selected_model:
+            raise ValueError("No models configured in settings")
+
         return cls(
             exe=settings.server.exe_path or "",
             cache_path=settings.server.cache_dir or "",
             log_path=settings.server.log_path or "",
-            model_path=settings.models[0].model_name_or_path or "",
-            alias=settings.models[0].serving_name or "",
+            model_path=selected_model.model_name_or_path or "",
+            alias=selected_model.serving_name or "",
         )
 
 
@@ -393,19 +415,34 @@ class ModelServer:
             self.logger.info("Startup interrupted by user")
             return False
 
-    def up(self, reset: bool = True) -> Dict[str, Any]:
+    def up(self, reset: bool = True, serving_name: Optional[str] = None) -> Dict[str, Any]:
         """
         Start the model server
 
         Args:
             reset: Whether to reset KV cache (True = reset, False = resume)
+            serving_name: Optional serving name to select specific model.
+                         If None, uses the first model in config.
 
         Returns:
             Dict with status and message
         """
         try:
             from services.model_log import model_log_service
-            model_log_service.append_log(f"Starting model server (reset={reset})...")
+            model_log_service.append_log(f"Starting model server (reset={reset}, serving_name={serving_name})...")
+
+            # Update config with selected model
+            try:
+                self.config = ModelServerConfig.from_settings(serving_name)
+                model_log_service.append_log(f"Selected model: {self.config.alias}")
+            except ValueError as e:
+                error_msg = str(e)
+                model_log_service.append_log(f"Model selection error: {error_msg}")
+                return {
+                    "status": "error",
+                    "message": error_msg,
+                    "details": {"error_type": "ModelSelectionError"}
+                }
 
             # Validate configuration with detailed error messages
             validation_result = self._validate_paths_detailed()
