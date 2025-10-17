@@ -15,6 +15,7 @@ env.yaml
 uploads/
 logs/
 legacy_scripts/
+testcases/docs/*.pdf
 
 # OS
 .DS_Store

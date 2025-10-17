@@ -24,6 +24,7 @@ class ModelSettings(BaseSettings):
     """Individual model configuration"""
     model_name_or_path: Optional[str] = None
     serving_name: Optional[str] = None
+    tokenizer: Optional[str] = None  # HuggingFace tokenizer identifier
 
     model_config = SettingsConfigDict(
         env_prefix="MODEL_",
@@ -99,8 +100,17 @@ class APISettings(BaseSettings):
 class DocumentSettings(BaseSettings):
     """Document management settings"""
     upload_dir: str = "uploads"
-    max_file_size: int = 10 * 1024 * 1024  # 10MB
-    allowed_extensions: List[str] = [".txt"]
+    max_file_size: int = 50 * 1024 * 1024  # 50MB (increased for PDF files)
+    allowed_extensions: List[str] = [".pdf"]
+
+    # Chunking settings for PDF documents
+    chunk_size: int = 5000  # Maximum characters per chunk
+    chunk_overlap: int = 200  # Overlap between chunks for context continuity
+
+    # Tokenizer settings
+    # If set, will use this model's tokenizer to count tokens in chunks
+    # Should match a serving_name or model_name_or_path from models config
+    tokenizer_model: Optional[str] = None
 
     model_config = SettingsConfigDict(
         env_prefix="DOCUMENT_",
@@ -156,7 +166,8 @@ class Settings(BaseSettings):
                 self.models = [
                     ModelSettings(
                         model_name_or_path=model.get('model_name_or_path'),
-                        serving_name=model.get('serving_name')
+                        serving_name=model.get('serving_name'),
+                        tokenizer=model.get('tokenizer')
                     ) for model in models_data
                 ]
 
@@ -254,6 +265,37 @@ class Settings(BaseSettings):
     def ALLOWED_EXTENSIONS(self) -> List[str]:
         """Get allowed extensions for backward compatibility"""
         return self.documents.allowed_extensions
+
+    def get_tokenizer_for_model(self, model_identifier: Optional[str] = None) -> Optional[str]:
+        """
+        Get the tokenizer string for a given model identifier
+
+        Args:
+            model_identifier: serving_name or model_name_or_path,
+                            or None to automatically use the first model with tokenizer
+
+        Returns:
+            Tokenizer string (HuggingFace identifier) or None if not configured
+        """
+        # If specific model identifier provided, search for that model
+        if model_identifier:
+            for model in self.models:
+                if model.serving_name == model_identifier or model.model_name_or_path == model_identifier:
+                    return model.tokenizer
+            return None
+
+        # If tokenizer_model is set in documents config, use that
+        if self.documents.tokenizer_model:
+            for model in self.models:
+                if model.serving_name == self.documents.tokenizer_model or model.model_name_or_path == self.documents.tokenizer_model:
+                    return model.tokenizer
+
+        # Otherwise, automatically use the first model that has a tokenizer configured
+        for model in self.models:
+            if model.tokenizer:
+                return model.tokenizer
+
+        return None
 
 
 # Create global settings instance

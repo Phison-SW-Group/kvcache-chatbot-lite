@@ -31,7 +31,18 @@ class DocumentUploadResponse(BaseModel):
     doc_id: str
     filename: str
     file_size: int
+    total_pages: int
+    total_chunks: int
     message: str
+
+
+class ChunkInfo(BaseModel):
+    """Chunk information"""
+    chunk_id: int
+    page_numbers: List[int]
+    char_count: int
+    token_count: Optional[int] = None
+    tokenizer: Optional[str] = None
 
 
 class DocumentInfo(BaseModel):
@@ -39,6 +50,8 @@ class DocumentInfo(BaseModel):
     doc_id: str
     filename: str
     file_size: int
+    total_pages: int
+    total_chunks: int
     uploaded_at: str
 
 

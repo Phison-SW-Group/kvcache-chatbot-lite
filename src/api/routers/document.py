@@ -26,9 +26,9 @@ os.makedirs(settings.documents.upload_dir, exist_ok=True)
 @router.post("/upload", response_model=DocumentUploadResponse)
 async def upload_document(file: UploadFile = File(...)):
     """
-    Upload a document (independent of any session)
-    Currently supports: .txt
-    Extensible for future formats: .pdf, .docx, .md, etc.
+    Upload a PDF document (independent of any session)
+    Currently supports: .pdf
+    The document will be automatically chunked for efficient processing
     """
     # Validate file extension
     file_extension = Path(file.filename).suffix.lower()
@@ -61,22 +61,34 @@ async def upload_document(file: UploadFile = File(...)):
         async with aiofiles.open(file_path, 'wb') as f:
             await f.write(file_content)
 
-        # Process document to extract text
-        document_content = await document_service.process_document(file_path)
+        # Process document to extract text and create chunks
+        processed_doc = await document_service.process_document(file_path)
+
+        # Convert DocumentChunk objects to ChunkMetadata objects
+        from services.document_manager import ChunkMetadata
+        chunks = [
+            ChunkMetadata(**chunk.to_dict())
+            for chunk in processed_doc.chunks
+        ]
 
         # Store in document manager
         doc_id = document_manager.add_document(
             filename=file.filename,
             file_size=file_size,
             file_path=file_path,
-            content=document_content
+            full_text=processed_doc.full_text,
+            chunks=chunks,
+            total_pages=processed_doc.total_pages,
+            tokenizer=processed_doc.tokenizer
         )
 
         return DocumentUploadResponse(
             doc_id=doc_id,
             filename=file.filename,
             file_size=file_size,
-            message=f"Document '{file.filename}' uploaded successfully"
+            total_pages=processed_doc.total_pages,
+            total_chunks=processed_doc.total_chunks,
+            message=f"Document '{file.filename}' uploaded successfully with {processed_doc.total_chunks} chunks"
         )
 
     except ValueError as e:
@@ -99,20 +111,67 @@ async def list_documents():
 
 
 @router.get("/{doc_id}")
-async def get_document_info(doc_id: str, include_preview: bool = True):
+async def get_document_info(doc_id: str, include_preview: bool = True, include_chunks: bool = False):
     """
     Get information about a specific document
 
     Args:
         doc_id: Document ID
         include_preview: Whether to include content preview (default: True)
+        include_chunks: Whether to include chunk information (default: False)
     """
     doc = document_manager.get_document(doc_id)
 
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    return doc.to_dict(include_preview=include_preview, preview_lines=10)
+    return doc.to_dict(include_preview=include_preview, include_chunks=include_chunks)
+
+
+@router.get("/{doc_id}/chunks")
+async def get_document_chunks(doc_id: str):
+    """
+    Get all chunks for a specific document
+
+    Args:
+        doc_id: Document ID
+
+    Returns:
+        List of chunks with metadata
+    """
+    chunks = document_manager.get_document_chunks(doc_id)
+
+    if chunks is None:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    return {
+        "doc_id": doc_id,
+        "total_chunks": len(chunks),
+        "chunks": [chunk.to_dict(include_content=False) for chunk in chunks]
+    }
+
+
+@router.get("/{doc_id}/chunks/{chunk_id}")
+async def get_document_chunk(doc_id: str, chunk_id: int):
+    """
+    Get a specific chunk from a document
+
+    Args:
+        doc_id: Document ID
+        chunk_id: Chunk ID
+
+    Returns:
+        Chunk content and metadata
+    """
+    chunk = document_manager.get_document_chunk(doc_id, chunk_id)
+
+    if chunk is None:
+        raise HTTPException(status_code=404, detail="Document or chunk not found")
+
+    return {
+        "doc_id": doc_id,
+        "chunk": chunk.to_dict(include_content=True)
+    }
 
 
 @router.delete("/{doc_id}")
@@ -156,23 +215,18 @@ async def cache_document(doc_id: str):
         )
 
     # Ensure document content is loaded
-    if not document.content:
-        # Try to reload content from file
-        try:
-            with open(document.file_path, 'r', encoding='utf-8') as f:
-                document.content = f.read()
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to load document content: {str(e)}"
-            )
+    if not document.full_text:
+        raise HTTPException(
+            status_code=500,
+            detail="Document content is not available. Please re-upload the document."
+        )
 
     # Step 2: Pre-cache document content via inference
     # Prepare messages with only system role containing document content
     messages = [
         {
             "role": "system",
-            "content": document.content
+            "content": document.full_text
         }
     ]
 
@@ -212,10 +266,10 @@ async def cache_document(doc_id: str):
 @router.post("/upload_and_cache", response_model=DocumentUploadResponse)
 async def upload_document_and_cache(file: UploadFile = File(...)):
     """
-    Upload a document and pre-cache it in KV Cache
+    Upload a PDF document and pre-cache it in KV Cache
 
     This endpoint performs two steps:
-    1. Upload and process the document (same as /upload)
+    1. Upload and process the PDF document with chunking
     2. Run inference with document content as system message (max_tokens=2)
        - This populates the KV Cache in memory
        - The cache is immediately available for subsequent queries
@@ -255,15 +309,25 @@ async def upload_document_and_cache(file: UploadFile = File(...)):
         async with aiofiles.open(file_path, 'wb') as f:
             await f.write(file_content)
 
-        # Process document to extract text
-        document_content = await document_service.process_document(file_path)
+        # Process document to extract text and create chunks
+        processed_doc = await document_service.process_document(file_path)
+
+        # Convert DocumentChunk objects to ChunkMetadata objects
+        from services.document_manager import ChunkMetadata
+        chunks = [
+            ChunkMetadata(**chunk.to_dict())
+            for chunk in processed_doc.chunks
+        ]
 
         # Store in document manager
         doc_id = document_manager.add_document(
             filename=file.filename,
             file_size=file_size,
             file_path=file_path,
-            content=document_content
+            full_text=processed_doc.full_text,
+            chunks=chunks,
+            total_pages=processed_doc.total_pages,
+            tokenizer=processed_doc.tokenizer
         )
 
         # Step 2: Pre-cache document content via inference
@@ -271,7 +335,7 @@ async def upload_document_and_cache(file: UploadFile = File(...)):
         messages = [
             {
                 "role": "system",
-                "content": document_content
+                "content": processed_doc.full_text
             }
         ]
 
@@ -301,7 +365,9 @@ async def upload_document_and_cache(file: UploadFile = File(...)):
             doc_id=doc_id,
             filename=file.filename,
             file_size=file_size,
-            message=f"Document '{file.filename}' uploaded and cached successfully. KV Cache ready for prefix matching."
+            total_pages=processed_doc.total_pages,
+            total_chunks=processed_doc.total_chunks,
+            message=f"Document '{file.filename}' uploaded and cached successfully with {processed_doc.total_chunks} chunks. KV Cache ready for prefix matching."
         )
 
     except ValueError as e:

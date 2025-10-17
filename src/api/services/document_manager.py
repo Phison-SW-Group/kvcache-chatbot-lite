@@ -1,6 +1,7 @@
 """
 Independent document management service
 Documents are stored separately from sessions
+Supports collections with chunks for PDF documents
 """
 from typing import Dict, Optional, List
 from datetime import datetime
@@ -12,60 +13,153 @@ import os
 from config import settings
 
 
-class DocumentMetadata:
-    """Metadata for an uploaded document"""
+class ChunkMetadata:
+    """Metadata for a document chunk"""
 
-    def __init__(self, doc_id: str, filename: str, file_size: int, file_path: Path, uploaded_at: Optional[datetime] = None):
+    def __init__(
+        self,
+        chunk_id: int,
+        content: str,
+        page_numbers: List[int],
+        char_count: int,
+        token_count: Optional[int] = None
+    ):
+        self.chunk_id = chunk_id
+        self.content = content
+        self.page_numbers = page_numbers
+        self.char_count = char_count
+        self.token_count = token_count  # Number of tokens in this chunk
+
+    def to_dict(self, include_content: bool = True) -> dict:
+        """Convert to dictionary format"""
+        result = {
+            "chunk_id": self.chunk_id,
+            "page_numbers": self.page_numbers,
+            "char_count": self.char_count,
+            "token_count": self.token_count
+        }
+        if include_content:
+            result["content"] = self.content
+        return result
+
+    def to_persistent_dict(self) -> dict:
+        """Convert to dictionary format for persistence"""
+        return self.to_dict(include_content=True)
+
+    @classmethod
+    def from_persistent_dict(cls, data: dict) -> 'ChunkMetadata':
+        """Create ChunkMetadata from persisted dictionary"""
+        return cls(
+            chunk_id=data["chunk_id"],
+            content=data["content"],
+            page_numbers=data["page_numbers"],
+            char_count=data["char_count"],
+            token_count=data.get("token_count")
+        )
+
+
+class DocumentMetadata:
+    """
+    Metadata for an uploaded document (collection)
+    Each document is a collection that may contain multiple chunks
+    """
+
+    def __init__(
+        self,
+        doc_id: str,
+        filename: str,
+        file_size: int,
+        file_path: Path,
+        total_pages: int = 0,
+        uploaded_at: Optional[datetime] = None,
+        tokenizer: Optional[str] = None
+    ):
         self.doc_id = doc_id
         self.filename = filename
         self.file_size = file_size
         self.file_path = file_path
+        self.total_pages = total_pages
         self.uploaded_at = uploaded_at if uploaded_at else datetime.now()
-        self.content: Optional[str] = None
+        self.tokenizer = tokenizer  # Tokenizer used for this document
+        self.full_text: Optional[str] = None
+        self.chunks: List[ChunkMetadata] = []
 
-    def to_dict(self, include_preview: bool = False, preview_lines: int = 10) -> dict:
+    def add_chunk(self, chunk: ChunkMetadata) -> None:
+        """Add a chunk to this document collection"""
+        self.chunks.append(chunk)
+
+    def get_chunk(self, chunk_id: int) -> Optional[ChunkMetadata]:
+        """Get a specific chunk by ID"""
+        for chunk in self.chunks:
+            if chunk.chunk_id == chunk_id:
+                return chunk
+        return None
+
+    def get_all_chunks(self) -> List[ChunkMetadata]:
+        """Get all chunks in this collection"""
+        return self.chunks
+
+    def to_dict(self, include_preview: bool = False, include_chunks: bool = False) -> dict:
         """
         Convert to dictionary format (for API response)
 
         Args:
             include_preview: Whether to include content preview
-            preview_lines: Number of lines to include in preview
+            include_chunks: Whether to include chunk information
         """
         result = {
             "doc_id": self.doc_id,
             "filename": self.filename,
             "file_size": self.file_size,
-            "uploaded_at": self.uploaded_at.isoformat()
+            "total_pages": self.total_pages,
+            "total_chunks": len(self.chunks),
+            "uploaded_at": self.uploaded_at.isoformat(),
+            "tokenizer": self.tokenizer
         }
 
-        if include_preview and self.content:
-            lines = self.content.split('\n')
-            preview_text = '\n'.join(lines[:preview_lines])
+        if include_preview and self.full_text:
+            preview_text = self.full_text[:500]
             result["content_preview"] = preview_text
-            result["total_lines"] = len(lines)
+            result["total_chars"] = len(self.full_text)
+
+        if include_chunks:
+            result["chunks"] = [chunk.to_dict(include_content=False) for chunk in self.chunks]
 
         return result
 
     def to_persistent_dict(self) -> dict:
-        """Convert to dictionary format for persistence (includes file_path)"""
+        """Convert to dictionary format for persistence (includes file_path and chunks)"""
         return {
             "doc_id": self.doc_id,
             "filename": self.filename,
             "file_size": self.file_size,
             "file_path": str(self.file_path),
-            "uploaded_at": self.uploaded_at.isoformat()
+            "total_pages": self.total_pages,
+            "uploaded_at": self.uploaded_at.isoformat(),
+            "tokenizer": self.tokenizer,
+            "chunks": [chunk.to_persistent_dict() for chunk in self.chunks]
         }
 
     @classmethod
     def from_persistent_dict(cls, data: dict) -> 'DocumentMetadata':
         """Create DocumentMetadata from persisted dictionary"""
-        return cls(
+        doc = cls(
             doc_id=data["doc_id"],
             filename=data["filename"],
             file_size=data["file_size"],
             file_path=Path(data["file_path"]),
-            uploaded_at=datetime.fromisoformat(data["uploaded_at"])
+            total_pages=data.get("total_pages", 0),
+            uploaded_at=datetime.fromisoformat(data["uploaded_at"]),
+            tokenizer=data.get("tokenizer")
         )
+
+        # Restore chunks
+        if "chunks" in data:
+            for chunk_data in data["chunks"]:
+                chunk = ChunkMetadata.from_persistent_dict(chunk_data)
+                doc.add_chunk(chunk)
+
+        return doc
 
 
 class DocumentManager:
@@ -121,13 +215,9 @@ class DocumentManager:
                         print(f"Warning: Document file not found, skipping: {metadata.file_path}")
                         continue
 
-                    # Reload content from file
-                    try:
-                        with open(metadata.file_path, 'r', encoding='utf-8') as f:
-                            metadata.content = f.read()
-                    except Exception as e:
-                        print(f"Warning: Could not read document content from {metadata.file_path}: {e}")
-                        metadata.content = ""
+                    # Reconstruct full_text from chunks (for PDF documents)
+                    if metadata.chunks:
+                        metadata.full_text = "\n\n".join(chunk.content for chunk in metadata.chunks)
 
                     self._documents[doc_id] = metadata
 
@@ -140,22 +230,45 @@ class DocumentManager:
         except Exception as e:
             print(f"Error loading document metadata: {e}")
 
-    def add_document(self, filename: str, file_size: int, file_path: Path, content: str) -> str:
+    def add_document(
+        self,
+        filename: str,
+        file_size: int,
+        file_path: Path,
+        full_text: str,
+        chunks: List['ChunkMetadata'],
+        total_pages: int = 0,
+        tokenizer: Optional[str] = None
+    ) -> str:
         """
-        Add a new document to the manager
+        Add a new document collection to the manager
 
         Args:
             filename: Original filename
             file_size: Size in bytes
             file_path: Path where file is stored
-            content: Extracted text content
+            full_text: Complete extracted text content
+            chunks: List of document chunks
+            total_pages: Total number of pages in document
 
         Returns:
             Document ID
         """
         doc_id = str(uuid.uuid4())
-        metadata = DocumentMetadata(doc_id, filename, file_size, file_path)
-        metadata.content = content
+        metadata = DocumentMetadata(
+            doc_id=doc_id,
+            filename=filename,
+            file_size=file_size,
+            file_path=file_path,
+            total_pages=total_pages,
+            tokenizer=tokenizer
+        )
+        metadata.full_text = full_text
+
+        # Add all chunks to the document
+        for chunk in chunks:
+            metadata.add_chunk(chunk)
+
         self._documents[doc_id] = metadata
 
         # Save metadata to persist changes
@@ -168,9 +281,19 @@ class DocumentManager:
         return self._documents.get(doc_id)
 
     def get_document_content(self, doc_id: str) -> Optional[str]:
-        """Get document text content by ID"""
+        """Get complete document text content by ID"""
         doc = self._documents.get(doc_id)
-        return doc.content if doc else None
+        return doc.full_text if doc else None
+
+    def get_document_chunk(self, doc_id: str, chunk_id: int) -> Optional['ChunkMetadata']:
+        """Get a specific chunk from a document"""
+        doc = self._documents.get(doc_id)
+        return doc.get_chunk(chunk_id) if doc else None
+
+    def get_document_chunks(self, doc_id: str) -> Optional[List['ChunkMetadata']]:
+        """Get all chunks from a document"""
+        doc = self._documents.get(doc_id)
+        return doc.get_all_chunks() if doc else None
 
     def list_documents(self) -> List[dict]:
         """List all uploaded documents"""
@@ -188,9 +311,7 @@ class DocumentManager:
         """
         if doc_id in self._documents:
             doc = self._documents[doc_id]
-            # Clean up file
-            if doc.file_path.exists():
-                doc.file_path.unlink()
+            # Only remove from metadata, keep original file
             del self._documents[doc_id]
 
             # Save metadata to persist changes
