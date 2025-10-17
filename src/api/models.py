@@ -17,6 +17,7 @@ class MessageRequest(BaseModel):
     """Request body for message endpoint"""
     message: str = Field(..., description="User message")
     document_id: Optional[str] = Field(default=None, description="Document ID to use as context")
+    use_rag: bool = Field(default=True, description="Whether to use RAG retrieval for document context")
 
 
 class ChatResponse(BaseModel):
@@ -24,6 +25,7 @@ class ChatResponse(BaseModel):
     session_id: str
     message: str
     timestamp: datetime
+    rag_info: Optional[dict] = None  # RAG retrieval information (group_id, similarity_score)
 
 
 class DocumentUploadResponse(BaseModel):
@@ -52,7 +54,36 @@ class DocumentInfo(BaseModel):
     file_size: int
     total_pages: int
     total_chunks: int
+    total_groups: int = 0
     uploaded_at: str
+
+
+class GroupInfo(BaseModel):
+    """Group information for RAG"""
+    group_id: str
+    chunk_ids: List[int]
+    total_tokens: int
+    content_length: int
+
+
+class CacheGroupRequest(BaseModel):
+    """Request body for caching a specific group"""
+    doc_id: str = Field(..., description="Document ID")
+    group_id: str = Field(..., description="Group ID to cache")
+
+
+class CacheAllGroupsRequest(BaseModel):
+    """Request body for caching all groups in a document"""
+    doc_id: str = Field(..., description="Document ID")
+
+
+class CacheGroupResponse(BaseModel):
+    """Response body for group caching operations"""
+    doc_id: str
+    group_id: Optional[str] = None
+    cached_groups: int
+    total_groups: int
+    message: str
 
 
 class UploadResponse(BaseModel):

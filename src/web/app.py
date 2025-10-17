@@ -129,11 +129,13 @@ class ChatbotClient:
         return response.json()["message"]
 
     def stream_message(self, message: str, document_id: Optional[str] = None):
-        """Send a message and get streaming response"""
+        """Send a message and get streaming response, yields tuples of (chunk, rag_info)"""
         payload = {
             "message": message,
             "document_id": document_id
         }
+
+        rag_info = None
 
         with self.client.stream(
             "POST",
@@ -157,16 +159,23 @@ class ChatbotClient:
                     try:
                         data = json.loads(line[6:])  # Remove "data: " prefix
 
+                        # Check for RAG info
+                        if data.get("rag_info") and not rag_info:
+                            rag_info = data["rag_info"]
+                            # Yield RAG info immediately
+                            yield ("", rag_info)
+                            continue
+
                         # Check for errors
                         if data.get("error"):
-                            yield f"Error: {data['error']}"
+                            yield (f"Error: {data['error']}", rag_info)
                             break
 
                         # Yield chunks until done
                         if not data.get("done"):
                             chunk = data.get("chunk", "")
                             if chunk:  # Only yield non-empty chunks
-                                yield chunk
+                                yield (chunk, rag_info)
                     except json.JSONDecodeError as e:
                         print(f"Failed to parse SSE data: {line}, error: {e}")
                         continue
@@ -292,8 +301,29 @@ class ChatbotWeb:
 
         # Stream response from backend
         full_response = ""
+        rag_info_displayed = False
         try:
-            for chunk in self.client.stream_message(message, doc_id):
+            for chunk, rag_info in self.client.stream_message(message, doc_id):
+                # Update document selection message with RAG info
+                if rag_info and not rag_info_displayed:
+                    rag_preview = self._format_rag_preview(rag_info)
+                    if rag_preview:
+                        # Find and update the document selection system message
+                        for i in range(len(history) - 2, -1, -1):  # Search backwards, skip last (current message)
+                            user_msg, bot_msg = history[i]
+                            if user_msg == "" and "📄 **Document Selected:**" in bot_msg:
+                                # Replace the hint text with RAG preview
+                                lines = bot_msg.split("\n")
+                                # Keep the first 3 lines (filename, size/groups, empty line)
+                                # Replace the hint line
+                                if len(lines) >= 3:
+                                    updated_msg = "\n".join(lines[:3]) + "\n" + rag_preview
+                                    history[i] = ("", updated_msg)
+                                    yield history, "", ""
+                                break
+                        rag_info_displayed = True
+
+                # Append chunks to response
                 full_response += chunk
                 history[-1] = (message, full_response)
                 yield history, "", ""
@@ -309,6 +339,47 @@ class ChatbotWeb:
             history[-1] = (message, error_msg)
             yield history, "", ""
 
+
+    def _format_rag_info(self, rag_info: dict) -> str:
+        """Format RAG retrieval information for display"""
+        if not rag_info:
+            return ""
+
+        method = rag_info.get("method", "unknown")
+
+        if method == "rag":
+            group_id = rag_info.get("group_id", "unknown")
+            similarity = rag_info.get("similarity_score", 0)
+            filename = rag_info.get("filename", "document")
+            return f"🔍 **RAG Retrieved:** `{group_id}` (similarity: {similarity:.4f}) from `{filename}`"
+        elif method == "full_document":
+            filename = rag_info.get("filename", "document")
+            return f"📄 **Using full document:** `{filename}`"
+
+        return ""
+
+    def _format_rag_preview(self, rag_info: dict) -> str:
+        """Format RAG retrieval preview with content snippet"""
+        if not rag_info:
+            return ""
+
+        method = rag_info.get("method", "unknown")
+
+        if method == "rag":
+            content = rag_info.get("content_preview", "")
+
+            if content:
+                # Show first 300 characters of the retrieved content
+                preview_content = content[:300].strip()
+                if len(content) > 300:
+                    preview_content += "..."
+                return f"**📝 Retrieved Context:**\n```\n{preview_content}\n```"
+            else:
+                return "🔍 **Content retrieved successfully**"
+        elif method == "full_document":
+            return "📄 **Using full document content**"
+
+        return ""
 
     def get_document_choices(self) -> List[Tuple[str, str]]:
         """Get list of documents for dropdown"""
@@ -550,13 +621,12 @@ class ChatbotWeb:
             # Add system message to chatbot
             system_msg = f"📄 **Document Selected:** {doc_info['filename']}\n"
             system_msg += f"📊 Size: {doc_info['file_size']} bytes"
-            if doc_info.get('total_lines'):
-                system_msg += f" | Lines: {doc_info['total_lines']}"
 
-            if doc_info.get('content_preview'):
-                system_msg += f"\n\n**Preview:**\n```\n{doc_info['content_preview']}\n```"
-                if doc_info.get('total_lines', 0) > 10:
-                    system_msg += "\n_(showing first 10 lines)_"
+            # Show groups info if available (RAG mode)
+            if doc_info.get('total_groups'):
+                system_msg += f" | Found: {doc_info['total_groups']} groups"
+
+            system_msg += "\n\n💡 _Enter your query to retrieve relevant content from this document._"
 
             # Insert system message at the end of history
             new_history = history + [("", system_msg)]
@@ -635,10 +705,7 @@ class ChatbotWeb:
             result = self.client.start_model_with_reset(serving_name=selected_model)
 
             # Format status message for model_status display
-            if result.get('status') == 'success':
-                status_msg = f"✅ {result['message']}"
-            else:
-                status_msg = f"❌ {result['message']}"
+            status_msg = result['message']
 
             # Format detailed logging for deploy_log display
             if result.get('status') == 'success':
@@ -659,7 +726,7 @@ class ChatbotWeb:
                 yield status_msg, filtered_logs, gr.Dropdown(choices=self.get_document_choices(), value="None")
             else:
                 # Handle error cases with detailed information
-                log_msg = f"❌ {result['message']}\n"
+                log_msg = f"{result['message']}\n"
 
                 # Add details if available
                 if result.get('details'):
@@ -782,9 +849,9 @@ class ChatbotWeb:
 
             # Format status message
             if result.get('status') == 'success':
-                status_msg = f"✅ {result['message']}"
+                status_msg = result['message']
             else:
-                status_msg = f"❌ {result['message']}"
+                status_msg = result['message']
 
             # Fetch and display logs after stop operation
             import time
@@ -813,7 +880,7 @@ class ChatbotWeb:
                     gr.Markdown("**📤 Upload** Document(s)")
                     file_upload = gr.File(
                         label="",
-                        file_types=[".txt"],
+                        file_types=[".pdf"],
                         type="filepath",
                         file_count="multiple",
                         height=150

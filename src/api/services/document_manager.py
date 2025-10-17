@@ -22,13 +22,25 @@ class ChunkMetadata:
         content: str,
         page_numbers: List[int],
         char_count: int,
-        token_count: Optional[int] = None
+        token_count: Optional[int] = None,
+        source_file: Optional[str] = None,
+        chunk_index: Optional[int] = None,
+        group_id: Optional[str] = None,
+        start_page: Optional[int] = None,
+        end_page: Optional[int] = None,
+        page_key: Optional[str] = None
     ):
         self.chunk_id = chunk_id
         self.content = content
         self.page_numbers = page_numbers
         self.char_count = char_count
-        self.token_count = token_count  # Number of tokens in this chunk
+        self.token_count = token_count
+        self.source_file = source_file
+        self.chunk_index = chunk_index
+        self.group_id = group_id
+        self.start_page = start_page
+        self.end_page = end_page
+        self.page_key = page_key
 
     def to_dict(self, include_content: bool = True) -> dict:
         """Convert to dictionary format"""
@@ -36,7 +48,13 @@ class ChunkMetadata:
             "chunk_id": self.chunk_id,
             "page_numbers": self.page_numbers,
             "char_count": self.char_count,
-            "token_count": self.token_count
+            "token_count": self.token_count,
+            "source_file": self.source_file,
+            "chunk_index": self.chunk_index,
+            "group_id": self.group_id,
+            "start_page": self.start_page,
+            "end_page": self.end_page,
+            "page_key": self.page_key
         }
         if include_content:
             result["content"] = self.content
@@ -54,7 +72,13 @@ class ChunkMetadata:
             content=data["content"],
             page_numbers=data["page_numbers"],
             char_count=data["char_count"],
-            token_count=data.get("token_count")
+            token_count=data.get("token_count"),
+            source_file=data.get("source_file"),
+            chunk_index=data.get("chunk_index"),
+            group_id=data.get("group_id"),
+            start_page=data.get("start_page"),
+            end_page=data.get("end_page"),
+            page_key=data.get("page_key")
         )
 
 
@@ -83,6 +107,7 @@ class DocumentMetadata:
         self.tokenizer = tokenizer  # Tokenizer used for this document
         self.full_text: Optional[str] = None
         self.chunks: List[ChunkMetadata] = []
+        self.groups: List[dict] = []  # Merged groups from document processing
 
     def add_chunk(self, chunk: ChunkMetadata) -> None:
         """Add a chunk to this document collection"""
@@ -99,6 +124,21 @@ class DocumentMetadata:
         """Get all chunks in this collection"""
         return self.chunks
 
+    def add_group(self, group: dict) -> None:
+        """Add a merged group to this document"""
+        self.groups.append(group)
+
+    def get_groups(self) -> List[dict]:
+        """Get all merged groups"""
+        return self.groups
+
+    def get_group_by_id(self, group_id: str) -> Optional[dict]:
+        """Get a specific group by ID"""
+        for group in self.groups:
+            if group.get('group_id') == group_id:
+                return group
+        return None
+
     def to_dict(self, include_preview: bool = False, include_chunks: bool = False) -> dict:
         """
         Convert to dictionary format (for API response)
@@ -113,6 +153,7 @@ class DocumentMetadata:
             "file_size": self.file_size,
             "total_pages": self.total_pages,
             "total_chunks": len(self.chunks),
+            "total_groups": len(self.groups),
             "uploaded_at": self.uploaded_at.isoformat(),
             "tokenizer": self.tokenizer
         }
@@ -137,7 +178,8 @@ class DocumentMetadata:
             "total_pages": self.total_pages,
             "uploaded_at": self.uploaded_at.isoformat(),
             "tokenizer": self.tokenizer,
-            "chunks": [chunk.to_persistent_dict() for chunk in self.chunks]
+            "chunks": [chunk.to_persistent_dict() for chunk in self.chunks],
+            "groups": self.groups
         }
 
     @classmethod
@@ -159,6 +201,10 @@ class DocumentMetadata:
                 chunk = ChunkMetadata.from_persistent_dict(chunk_data)
                 doc.add_chunk(chunk)
 
+        # Restore groups
+        if "groups" in data:
+            doc.groups = data["groups"]
+
         return doc
 
 
@@ -167,46 +213,78 @@ class DocumentManager:
     Manages uploaded documents independently from sessions
     Users can upload documents and select them when chatting
 
-    Documents metadata is persisted to JSON file for persistence across restarts.
+    Each document's metadata is persisted to its own JSON file.
     """
 
-    METADATA_FILENAME = "documents_metadata.json"
+    INDEX_FILENAME = "documents_index.json"
 
     def __init__(self, upload_dir: str = "uploads"):
         self._documents: Dict[str, DocumentMetadata] = {}
-        self.upload_dir = upload_dir
-        self.metadata_path = Path(upload_dir) / self.METADATA_FILENAME
+        self.upload_dir = Path(upload_dir)
+        self.index_path = self.upload_dir / self.INDEX_FILENAME
 
         # Ensure upload directory exists
         os.makedirs(upload_dir, exist_ok=True)
 
         # Load existing documents metadata
-        self._load_metadata()
+        self._load_all_documents()
 
-    def _save_metadata(self):
-        """Save documents metadata to JSON file"""
-        try:
-            metadata_dict = {
-                doc_id: doc.to_persistent_dict()
-                for doc_id, doc in self._documents.items()
-            }
+    def _get_doc_metadata_path(self, doc_id: str) -> Path:
+        """Get the metadata file path for a specific document"""
+        return self.upload_dir / f"{doc_id}_metadata.json"
 
-            with open(self.metadata_path, 'w', encoding='utf-8') as f:
-                json.dump(metadata_dict, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving document metadata: {e}")
-
-    def _load_metadata(self):
-        """Load documents metadata from JSON file"""
-        if not self.metadata_path.exists():
+    def _save_document_metadata(self, doc_id: str):
+        """Save metadata for a single document"""
+        if doc_id not in self._documents:
             return
 
         try:
-            with open(self.metadata_path, 'r', encoding='utf-8') as f:
-                metadata_dict = json.load(f)
+            doc = self._documents[doc_id]
+            metadata_path = self._get_doc_metadata_path(doc_id)
 
-            for doc_id, doc_data in metadata_dict.items():
+            with open(metadata_path, 'w', encoding='utf-8') as f:
+                json.dump(doc.to_persistent_dict(), f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving document metadata for {doc_id}: {e}")
+
+    def _save_index(self):
+        """Save document index (list of all doc_ids and basic info)"""
+        try:
+            index_data = {
+                doc_id: {
+                    "filename": doc.filename,
+                    "uploaded_at": doc.uploaded_at.isoformat(),
+                    "metadata_file": f"{doc_id}_metadata.json"
+                }
+                for doc_id, doc in self._documents.items()
+            }
+
+            with open(self.index_path, 'w', encoding='utf-8') as f:
+                json.dump(index_data, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving document index: {e}")
+
+    def _load_all_documents(self):
+        """Load all documents from their individual metadata files"""
+        if not self.index_path.exists():
+            print("No document index found, starting fresh")
+            return
+
+        try:
+            with open(self.index_path, 'r', encoding='utf-8') as f:
+                index_data = json.load(f)
+
+            for doc_id, index_info in index_data.items():
                 try:
+                    metadata_path = self._get_doc_metadata_path(doc_id)
+
+                    if not metadata_path.exists():
+                        print(f"Warning: Metadata file not found for {doc_id}, skipping")
+                        continue
+
+                    with open(metadata_path, 'r', encoding='utf-8') as f:
+                        doc_data = json.load(f)
+
                     # Recreate DocumentMetadata object
                     metadata = DocumentMetadata.from_persistent_dict(doc_data)
 
@@ -225,10 +303,11 @@ class DocumentManager:
                     print(f"Error loading document {doc_id}: {e}")
                     continue
 
-            print(f"Loaded {len(self._documents)} document(s) from metadata file")
+            print(f"Loaded {len(self._documents)} document(s) from individual metadata files")
 
         except Exception as e:
-            print(f"Error loading document metadata: {e}")
+            print(f"Error loading document index: {e}")
+
 
     def add_document(
         self,
@@ -271,8 +350,9 @@ class DocumentManager:
 
         self._documents[doc_id] = metadata
 
-        # Save metadata to persist changes
-        self._save_metadata()
+        # Save document metadata and update index
+        self._save_document_metadata(doc_id)
+        self._save_index()
 
         return doc_id
 
@@ -314,8 +394,11 @@ class DocumentManager:
             # Only remove from metadata, keep original file
             del self._documents[doc_id]
 
-            # Save metadata to persist changes
-            self._save_metadata()
+            # Delete metadata file and update index
+            metadata_path = self._get_doc_metadata_path(doc_id)
+            if metadata_path.exists():
+                metadata_path.unlink()
+            self._save_index()
 
             return True
         return False
@@ -329,20 +412,24 @@ class DocumentManager:
         """
         count = len(self._documents)
 
-        # Delete all files
-        for doc in self._documents.values():
+        # Delete all files and metadata files
+        for doc_id, doc in self._documents.items():
             if doc.file_path.exists():
                 doc.file_path.unlink()
+
+            # Delete metadata file
+            metadata_path = self._get_doc_metadata_path(doc_id)
+            if metadata_path.exists():
+                metadata_path.unlink()
 
         # Clear in-memory documents
         self._documents.clear()
 
-        # Save empty metadata
-        self._save_metadata()
+        # Save empty index
+        self._save_index()
 
         return count
 
 
 # Global document manager instance
 document_manager = DocumentManager(upload_dir=settings.documents.upload_dir)
-

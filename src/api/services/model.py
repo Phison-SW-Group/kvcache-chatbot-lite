@@ -148,7 +148,7 @@ class ModelServer:
 
         # Check executable path
         if not self.config.exe:
-            errors.append("LLM_SERVER_EXE not configured")
+            errors.append("❌ LLM_SERVER_EXE not configured")
             details["exe_configured"] = False
         else:
             exe_path = Path(self.config.exe)
@@ -156,20 +156,20 @@ class ModelServer:
             details["exe_configured"] = True
 
             if not exe_path.exists():
-                errors.append(f"Server executable not found: {exe_path}")
+                errors.append(f"❌ Server executable not found: {exe_path}")
                 details["exe_exists"] = False
             else:
                 details["exe_exists"] = True
                 # Check if executable is actually executable
                 if not os.access(exe_path, os.X_OK):
-                    errors.append(f"Server executable is not executable: {exe_path}")
+                    errors.append(f"❌ Server executable is not executable: {exe_path}")
                     details["exe_executable"] = False
                 else:
                     details["exe_executable"] = True
 
         # Check model path
         if not self.config.model_path:
-            errors.append("MODEL_NAME_OR_PATH not configured")
+            errors.append("❌ MODEL_NAME_OR_PATH not configured")
             details["model_configured"] = False
         else:
             model_path = Path(self.config.model_path)
@@ -177,13 +177,13 @@ class ModelServer:
             details["model_configured"] = True
 
             if not model_path.exists():
-                errors.append(f"Model file not found: {model_path}")
+                errors.append(f"❌ Model file not found: {model_path}")
                 details["model_exists"] = False
             else:
                 details["model_exists"] = True
                 # Check if model file is readable
                 if not os.access(model_path, os.R_OK):
-                    errors.append(f"Model file is not readable: {model_path}")
+                    errors.append(f"❌ Model file is not readable: {model_path}")
                     details["model_readable"] = False
                 else:
                     details["model_readable"] = True
@@ -197,7 +197,7 @@ class ModelServer:
                     cache_path.mkdir(parents=True, exist_ok=True)
                     details["cache_created"] = True
                 except Exception as e:
-                    errors.append(f"Cannot create cache directory: {cache_path} - {str(e)}")
+                    errors.append(f"❌ Cannot create cache directory: {cache_path} - {str(e)}")
                     details["cache_created"] = False
             else:
                 details["cache_created"] = True
@@ -212,7 +212,7 @@ class ModelServer:
                     log_dir.mkdir(parents=True, exist_ok=True)
                     details["log_dir_created"] = True
                 except Exception as e:
-                    errors.append(f"Cannot create log directory: {log_dir} - {str(e)}")
+                    errors.append(f"❌ Cannot create log directory: {log_dir} - {str(e)}")
                     details["log_dir_created"] = False
             else:
                 details["log_dir_created"] = True
@@ -220,7 +220,7 @@ class ModelServer:
         if errors:
             return {
                 "valid": False,
-                "message": "; ".join(errors),
+                "message": '\n'.join(errors),
                 "details": details
             }
         else:
@@ -682,7 +682,7 @@ class ModelServer:
 
                 if not signal_sent:
                     error_msg = "Failed to send shutdown signal to process"
-                    model_log_service.append_log(f"❌ {error_msg}")
+                    model_log_service.append_log(error_msg)
                     return {
                         "status": self.status.ERROR,
                         "message": error_msg

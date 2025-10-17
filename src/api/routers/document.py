@@ -8,7 +8,14 @@ from typing import List
 import os
 import aiofiles
 
-from models import DocumentUploadResponse, DocumentInfo
+from models import (
+    DocumentUploadResponse,
+    DocumentInfo,
+    GroupInfo,
+    CacheGroupRequest,
+    CacheAllGroupsRequest,
+    CacheGroupResponse
+)
 from config import settings
 from services.document_manager import document_manager
 from services.document_service import document_service
@@ -81,6 +88,14 @@ async def upload_document(file: UploadFile = File(...)):
             total_pages=processed_doc.total_pages,
             tokenizer=processed_doc.tokenizer
         )
+
+        # Store groups if available
+        if processed_doc.groups:
+            doc = document_manager.get_document(doc_id)
+            if doc:
+                for group in processed_doc.groups:
+                    doc.add_group(group.to_dict())
+                document_manager._save_document_metadata(doc_id)  # Persist groups
 
         return DocumentUploadResponse(
             doc_id=doc_id,
@@ -381,3 +396,195 @@ async def upload_document_and_cache(file: UploadFile = File(...)):
             file_path.unlink()
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
+
+@router.get("/{doc_id}/groups", response_model=List[GroupInfo])
+async def get_document_groups(doc_id: str):
+    """
+    Get all groups for a document
+
+    Returns list of groups with metadata (without full content)
+    """
+    document = document_manager.get_document(doc_id)
+    if not document:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document with ID '{doc_id}' not found"
+        )
+
+    groups = document.get_groups()
+    if not groups:
+        return []
+
+    # Convert to GroupInfo (exclude merged_content for efficiency)
+    group_infos = []
+    for group in groups:
+        group_infos.append(GroupInfo(
+            group_id=group.get('group_id', ''),
+            chunk_ids=group.get('chunk_ids', []),
+            total_tokens=group.get('total_tokens', 0),
+            content_length=len(group.get('merged_content', ''))
+        ))
+
+    return group_infos
+
+
+@router.post("/cache_group", response_model=CacheGroupResponse)
+async def cache_single_group(request: CacheGroupRequest):
+    """
+    Cache a single group from a document
+
+    This endpoint caches a specific group by running inference with the group's
+    merged content as a system message. This populates the KV Cache for that group.
+    """
+    # Check if model server is running
+    if not model_server._is_running():
+        raise HTTPException(
+            status_code=503,
+            detail="Model server is not running. Please start the model server first."
+        )
+
+    # Get document
+    document = document_manager.get_document(request.doc_id)
+    if not document:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document with ID '{request.doc_id}' not found"
+        )
+
+    # Get specific group
+    group = document.get_group_by_id(request.group_id)
+    if not group:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Group with ID '{request.group_id}' not found in document"
+        )
+
+    # Prepare messages with group content
+    group_content = group.get('merged_content', '')
+    if not group_content:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Group '{request.group_id}' has no content"
+        )
+
+    messages = [
+        {
+            "role": "system",
+            "content": group_content
+        }
+    ]
+
+    # Run inference with max_tokens=2 to cache
+    original_max_tokens = llm_service.max_tokens
+    llm_service.max_tokens = 2
+
+    try:
+        from services.model_log import model_log_service
+        model_log_service.append_log(
+            f"Cache operation started for group: {request.group_id} "
+            f"(doc_id={request.doc_id}, tokens={group.get('total_tokens', 0)})"
+        )
+
+        async for _ in llm_service.generate_response(messages, stream=False):
+            pass
+
+        model_log_service.append_log(f"Cache operation completed for group: {request.group_id}")
+
+        return CacheGroupResponse(
+            doc_id=request.doc_id,
+            group_id=request.group_id,
+            cached_groups=1,
+            total_groups=len(document.get_groups()),
+            message=f"Group '{request.group_id}' cached successfully"
+        )
+    except Exception as e:
+        from services.model_log import model_log_service
+        model_log_service.append_log(f"Cache operation failed for group {request.group_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error caching group: {str(e)}")
+    finally:
+        llm_service.max_tokens = original_max_tokens
+
+
+@router.post("/cache_all_groups", response_model=CacheGroupResponse)
+async def cache_all_document_groups(request: CacheAllGroupsRequest):
+    """
+    Cache all groups from a document
+
+    This endpoint caches all groups in a document by running inference for each group.
+    This is useful for pre-warming the KV Cache with all document groups.
+    """
+    # Check if model server is running
+    if not model_server._is_running():
+        raise HTTPException(
+            status_code=503,
+            detail="Model server is not running. Please start the model server first."
+        )
+
+    # Get document
+    document = document_manager.get_document(request.doc_id)
+    if not document:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document with ID '{request.doc_id}' not found"
+        )
+
+    groups = document.get_groups()
+    if not groups:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Document has no groups to cache"
+        )
+
+    # Cache each group
+    original_max_tokens = llm_service.max_tokens
+    llm_service.max_tokens = 2
+    cached_count = 0
+
+    try:
+        from services.model_log import model_log_service
+        model_log_service.append_log(
+            f"Batch cache operation started for document: {document.filename} "
+            f"(doc_id={request.doc_id}, total_groups={len(groups)})"
+        )
+
+        for group in groups:
+            group_id = group.get('group_id', '')
+            group_content = group.get('merged_content', '')
+
+            if not group_content:
+                model_log_service.append_log(f"Skipping empty group: {group_id}")
+                continue
+
+            messages = [
+                {
+                    "role": "system",
+                    "content": group_content
+                }
+            ]
+
+            try:
+                async for _ in llm_service.generate_response(messages, stream=False):
+                    pass
+                cached_count += 1
+                model_log_service.append_log(f"Cached group {cached_count}/{len(groups)}: {group_id}")
+            except Exception as e:
+                model_log_service.append_log(f"Failed to cache group {group_id}: {str(e)}")
+                # Continue with other groups even if one fails
+
+        model_log_service.append_log(
+            f"Batch cache operation completed: {cached_count}/{len(groups)} groups cached"
+        )
+
+        return CacheGroupResponse(
+            doc_id=request.doc_id,
+            group_id=None,
+            cached_groups=cached_count,
+            total_groups=len(groups),
+            message=f"Cached {cached_count}/{len(groups)} groups successfully"
+        )
+    except Exception as e:
+        from services.model_log import model_log_service
+        model_log_service.append_log(f"Batch cache operation failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error caching groups: {str(e)}")
+    finally:
+        llm_service.max_tokens = original_max_tokens
