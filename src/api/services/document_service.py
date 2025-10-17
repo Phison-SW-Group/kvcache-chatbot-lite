@@ -19,7 +19,6 @@ class DocumentChunk:
     page_numbers: List[int]
     char_count: int
     token_count: Optional[int] = None
-    tokenizer: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary format"""
@@ -158,8 +157,7 @@ class PdfProcessor:
                 content=chunk_text,
                 page_numbers=page_numbers,
                 char_count=len(chunk_text),
-                token_count=token_count,
-                tokenizer=self.tokenizer_name if token_count is not None else None
+                token_count=token_count
             )
             chunks.append(chunk)
 
