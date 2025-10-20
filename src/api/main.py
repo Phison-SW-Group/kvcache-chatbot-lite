@@ -11,7 +11,7 @@ from contextlib import asynccontextmanager
 from config import settings
 from routers import session, upload, document, model, logs
 from services.session_service import session_manager
-from services.llm_service import llm_service
+from services.llm_service import llm_service, configure_llm_service
 from services.model import model_server
 
 
@@ -51,21 +51,44 @@ async def lifespan(app: FastAPI):
     print(f"   Log file: {log_session.log_file_path}")
     print(f"   llama-server will write logs to this file via --log-file parameter")
 
-    # Initialize LLM service with config
-    if settings.completion_params.api_key:
-        llm_service.__init__(
-            model=settings.models[0].serving_name,
-            **settings.completion_params.model_dump()
-        )
-        print(f"✅ LLM service initialized with model: {settings.models[0].serving_name}")
-        print(f"   Base URL: {settings.completion_params.base_url}")
-        print(f"   API Key: {'***' if settings.completion_params.api_key else 'None'}")
+    # Initialize LLM service with the first configured model
+    if not settings.models:
+        error_msg = "No models configured in env.yaml"
+        print(f"❌ {error_msg}")
+        model_log_service.append_log(f"ERROR: {error_msg}")
+        raise ValueError(error_msg)
 
-        # Log LLM initialization
-        model_log_service.append_log(f"LLM service initialized - Model: {settings.models[0].serving_name}, Base URL: {settings.completion_params.base_url}")
-    else:
-        print("⚠️  No LLM API key provided, using mock responses")
-        model_log_service.append_log("LLM service initialized - Using mock responses (no API key)")
+    # Initialize LLM service with the first configured model
+    first_model = settings.models[0]
+
+    # Validate first model configuration
+    if not first_model.api_key or first_model.api_key == "empty":
+        error_msg = f"API key not configured for model '{first_model.serving_name}'. Please set 'api_key' in the model configuration."
+        print(f"❌ {error_msg}")
+        model_log_service.append_log(f"ERROR: {error_msg}")
+        raise ValueError(error_msg)
+
+    # Convert completion_params to dict for **kwargs
+    completion_params_dict = first_model.completion_params.model_dump(exclude={'custom_params'})
+    if first_model.completion_params.custom_params:
+        completion_params_dict.update(first_model.completion_params.custom_params)
+
+    # Configure LLM service with first model
+    configure_llm_service(
+        model=first_model.serving_name,
+        api_key=first_model.api_key,
+        base_url=first_model.base_url,
+        **completion_params_dict
+    )
+
+    print(f"✅ LLM service initialized")
+    print(f"   Model: {first_model.serving_name}")
+    print(f"   Base URL: {first_model.base_url}")
+    print(f"   Temperature: {first_model.completion_params.temperature}")
+    print(f"   Max Tokens: {first_model.completion_params.max_tokens}")
+    print(f"   ℹ️  LLM service will be reconfigured when switching models")
+
+    model_log_service.append_log(f"LLM service initialized - Model: {first_model.serving_name}, Base URL: {first_model.base_url}")
 
     yield
 
