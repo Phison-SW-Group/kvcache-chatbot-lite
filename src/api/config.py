@@ -20,11 +20,60 @@ class ServerSettings(BaseSettings):
     )
 
 
+class CompletionParamsSettings(BaseSettings):
+    """Completion parameters for a specific model"""
+    # Basic generation parameters
+    temperature: float = 0.7
+    max_tokens: int = 2000
+    # top_p: float = 1.0
+    # top_k: int = 40
+    # repeat_penalty: float = 1.1
+    # frequency_penalty: float = 0.0
+    # presence_penalty: float = 0.0
+
+    # # Advanced parameters
+    # min_p: float = 0.05
+    # tfs_z: float = 1.0
+    # typical_p: float = 1.0
+    # mirostat: int = 0
+    # mirostat_tau: float = 5.0
+    # mirostat_eta: float = 0.1
+
+    # # Token handling
+    # repeat_last_n: int = 64
+    # penalize_newline: bool = True
+    # add_bos_token: bool = True
+    # ban_eos_token: bool = False
+    # skip_special_tokens: bool = True
+
+    # # Streaming and seed
+    # stream: bool = False
+    # seed: int = -1
+
+    # # Stop sequences
+    # stop: Optional[List[str]] = None
+
+    # Custom parameters
+    custom_params: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = SettingsConfigDict(
+        case_sensitive=True,
+        extra='allow',
+    )
+
+
 class ModelSettings(BaseSettings):
-    """Individual model configuration"""
+    """Individual model configuration with its own API and completion settings"""
     model_name_or_path: Optional[str] = None
     serving_name: Optional[str] = None
     tokenizer: Optional[str] = None  # HuggingFace tokenizer identifier
+
+    # API settings for this model
+    base_url: Optional[str] = None  # Default: None
+    api_key: Optional[str] = "empty"  # Default: "empty" (must be configured for LLM service)
+
+    # Completion parameters for this model
+    completion_params: CompletionParamsSettings = Field(default_factory=CompletionParamsSettings)
 
     model_config = SettingsConfigDict(
         env_prefix="MODEL_",
@@ -35,6 +84,10 @@ class ModelSettings(BaseSettings):
         """Auto-compute serving name if not provided"""
         if self.serving_name is None:
             self.serving_name = self.model_name_or_path
+
+        # Convert None api_key to "empty"
+        if self.api_key is None:
+            self.api_key = "empty"
 
 
 class CompletionSettings(BaseSettings):
@@ -172,13 +225,39 @@ class Settings(BaseSettings):
             # Load models settings
             if 'models' in yaml_data:
                 models_data = yaml_data['models']
-                self.models = [
-                    ModelSettings(
-                        model_name_or_path=model.get('model_name_or_path'),
-                        serving_name=model.get('serving_name'),
-                        tokenizer=model.get('tokenizer')
-                    ) for model in models_data
-                ]
+                self.models = []
+                for model_data in models_data:
+                    # Load completion params for this model
+                    completion_params_data = model_data.get('completion_params', {})
+
+                    # Handle custom parameters
+                    completion_kwargs = {}
+                    custom_params = {}
+
+                    # Get valid field names from CompletionParamsSettings
+                    valid_fields = set(CompletionParamsSettings.model_fields.keys())
+
+                    for key, value in completion_params_data.items():
+                        if key in valid_fields:
+                            completion_kwargs[key] = value
+                        else:
+                            custom_params[key] = value
+
+                    if custom_params:
+                        completion_kwargs['custom_params'] = custom_params
+
+                    completion_params = CompletionParamsSettings(**completion_kwargs)
+
+                    # Create model settings
+                    model_settings = ModelSettings(
+                        model_name_or_path=model_data.get('model_name_or_path'),
+                        serving_name=model_data.get('serving_name'),
+                        tokenizer=model_data.get('tokenizer'),
+                        base_url=model_data.get('base_url'),
+                        api_key=model_data.get('api_key'),
+                        completion_params=completion_params
+                    )
+                    self.models.append(model_settings)
 
             # Load completion settings
             if 'completion_params' in yaml_data:
