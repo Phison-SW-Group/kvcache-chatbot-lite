@@ -70,32 +70,11 @@ class ChatbotClient:
         """
         response = self.client.post(
             f"{self.api_base_url}/documents/cache/{doc_id}",
-            timeout=60.0  # 1 minute for caching operation
+            timeout=300.0  # 5 minutes for caching operation (large documents may need more time)
         )
         response.raise_for_status()
         return response.json()
 
-    def upload_document_and_cache(self, file_path: str) -> dict:
-        """
-        Upload a document and pre-cache it in KV Cache
-
-        This function uploads a document and triggers KV Cache pre-warming:
-        1. Upload document
-        2. Run inference with document as system message (max_tokens=2)
-        3. Restart model server with reset=False to preserve KV Cache
-
-        This enables prefix matching acceleration for subsequent queries.
-        """
-        with open(file_path, 'rb') as f:
-            files = {'file': f}
-            # Use longer timeout as this includes model restart
-            response = self.client.post(
-                f"{self.api_base_url}/documents/upload_and_cache",
-                files=files,
-                timeout=180.0  # 3 minutes to allow for model restart
-            )
-        response.raise_for_status()
-        return response.json()
 
     def list_documents(self) -> list:
         """Get list of all uploaded documents"""
@@ -439,7 +418,13 @@ class ChatbotWeb:
                 })
                 uploaded_doc_ids.append(result['doc_id'])
             except httpx.HTTPStatusError as e:
-                error_detail = e.response.json().get('detail', str(e))
+                # Try to parse JSON error response, fallback to text if not JSON
+                try:
+                    error_detail = e.response.json().get('detail', str(e))
+                except (ValueError, AttributeError):
+                    # Response is not JSON or has no json() method
+                    error_detail = e.response.text if hasattr(e.response, 'text') else str(e)
+
                 failed_results.append({
                     'filename': file.name.split('/')[-1],
                     'error': error_detail
@@ -499,14 +484,27 @@ class ChatbotWeb:
 
         for doc_id in doc_ids_to_cache:
             try:
+                # Get initial logs before starting cache
+                initial_logs = self.fetch_model_logs()
+
+                # Start cache operation with progress tracking
                 result = self.client.cache_document(doc_id)
                 success_results.append({
                     'filename': result['filename'],
                     'size': result['file_size'],
-                    'doc_id': doc_id
+                    'doc_id': doc_id,
+                    'cached_groups': result.get('cached_groups', 0),
+                    'total_groups': result.get('total_groups', 0),
+                    'failed_groups': result.get('failed_groups', [])
                 })
             except httpx.HTTPStatusError as e:
-                error_detail = e.response.json().get('detail', str(e))
+                # Try to parse JSON error response, fallback to text if not JSON
+                try:
+                    error_detail = e.response.json().get('detail', str(e))
+                except (ValueError, AttributeError):
+                    # Response is not JSON or has no json() method
+                    error_detail = e.response.text if hasattr(e.response, 'text') else str(e)
+
                 failed_results.append({
                     'doc_id': doc_id,
                     'error': error_detail
@@ -523,7 +521,16 @@ class ChatbotWeb:
         if success_results:
             msg += f"✅ Successfully cached {len(success_results)} document(s):\n"
             for res in success_results:
+                cached_groups = res.get('cached_groups', 0)
+                total_groups = res.get('total_groups', 0)
+                failed_groups = res.get('failed_groups', [])
+
                 msg += f"  • {res['filename']} ({res['size']} bytes)\n"
+                msg += f"    📊 Groups: {cached_groups}/{total_groups} cached"
+
+                if failed_groups:
+                    msg += f" (Failed: {', '.join(failed_groups)})"
+                msg += "\n"
             msg += "\n🚀 KV Cache is ready for prefix matching!"
 
         if failed_results:
@@ -539,40 +546,22 @@ class ChatbotWeb:
         time.sleep(0.5)
         filtered_logs = self.fetch_model_logs()
 
+        # Add real-time cache progress to logs
+        if success_results:
+            for res in success_results:
+                cached_groups = res.get('cached_groups', 0)
+                total_groups = res.get('total_groups', 0)
+                failed_groups = res.get('failed_groups', [])
+
+                if cached_groups > 0:
+                    filtered_logs += f"\n📊 Real-time Cache Progress for {res['filename']}:\n"
+                    filtered_logs += f"  ✅ Successfully cached: {cached_groups}/{total_groups} groups\n"
+                    if failed_groups:
+                        filtered_logs += f"  ❌ Failed groups: {', '.join(failed_groups)}\n"
+                    filtered_logs += f"  🚀 KV Cache ready for prefix matching!\n"
+
         return msg, filtered_logs
 
-    def upload_file_and_cache(self, file) -> Tuple[str, gr.Dropdown, str]:
-        """
-        Handle file upload with KV Cache pre-warming
-
-        This function uploads a document and pre-caches it in the model's KV Cache
-        by running inference with the document content as system message.
-        This enables prefix matching acceleration for subsequent queries.
-
-        Args:
-            file: Uploaded file object
-
-        Returns:
-            Status message, updated dropdown, and model logs
-        """
-        if file is None:
-            return "Please select a file to upload", gr.Dropdown(choices=self.get_document_choices()), ""
-
-        try:
-            result = self.client.upload_document_and_cache(file.name)
-            msg = f"✅ {result['message']}\nFile: {result['filename']}\nSize: {result['file_size']} bytes\n\n🚀 KV Cache is ready for prefix matching!"
-
-            # Fetch and display new logs after cache operation
-            import time
-            time.sleep(0.5)
-            filtered_logs = self.fetch_model_logs()
-
-            # Refresh dropdown choices
-            return msg, gr.Dropdown(choices=self.get_document_choices()), filtered_logs
-        except httpx.HTTPStatusError as e:
-            return f"❌ Upload and cache failed: {e.response.json().get('detail', str(e))}", gr.Dropdown(choices=self.get_document_choices()), ""
-        except Exception as e:
-            return f"❌ Upload and cache failed: {str(e)}. Please make sure the backend server is running.", gr.Dropdown(choices=self.get_document_choices()), ""
 
 
     def clear_chat(self) -> Tuple[List, str, gr.Dropdown, List]:
