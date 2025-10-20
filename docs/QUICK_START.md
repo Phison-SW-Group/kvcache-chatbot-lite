@@ -95,7 +95,7 @@ Open your browser and navigate to: **http://localhost:7860**
 2. Select "product_manual.txt"
    → Ask: "What are the main features?"
 
-3. Switch to "faq.txt" 
+3. Switch to "faq.txt"
    → Ask: "How do I contact support?"
 
 4. Switch back to "product_manual.txt"

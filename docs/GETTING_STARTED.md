@@ -63,7 +63,7 @@ npm start
 # Terminal 1 - Backend
 cd src/api && python main.py
 
-# Terminal 2 - Frontend  
+# Terminal 2 - Frontend
 cd src/web && python app.py --backend-port 8000
 ```
 
