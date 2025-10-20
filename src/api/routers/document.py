@@ -276,13 +276,24 @@ async def cache_document(doc_id: str):
     1. Retrieve document from document manager
     2. Get all groups from the document
     3. Run inference for each group individually (max_tokens=2)
-       - This populates the KV Cache in memory for each group
+       - For local models: This populates the KV Cache in memory for each group
+       - For remote models: This is a simulated operation (no actual caching occurs)
        - Each group is cached separately for better granularity
        - The cache is immediately available for subsequent queries
        - Prefix matching will accelerate future requests with the same document groups
 
     No server restart is needed - the cache remains in memory and is ready for use.
     """
+    # Check if current model is remote
+    from services.llm_service import llm_service
+    from config import settings
+
+    current_config = llm_service.get_current_config()
+    current_model_name = current_config.get("model")
+    current_model = settings.get_model_by_serving_name(current_model_name) if current_model_name else None
+
+    is_remote = current_model and current_model.model_type == "remote"
+
     # Get document from document manager
     document = document_manager.get_document(doc_id)
     if not document:
@@ -301,8 +312,14 @@ async def cache_document(doc_id: str):
 
     # Log cache operation start
     from services.model_log import model_log_service
+
     model_log_service.append_log(f"🚀 Starting cache operation for document: {document.filename} (doc_id={doc_id})")
-    model_log_service.append_log(f"📊 Document has {len(groups)} groups to cache")
+    if is_remote:
+        model_log_service.append_log(f"ℹ️  Current model: remote ({current_model.provider})")
+        model_log_service.append_log(f"📊 Document has {len(groups)} groups to process")
+    else:
+        model_log_service.append_log(f"ℹ️  Current model: local (KV cache enabled)")
+        model_log_service.append_log(f"📊 Document has {len(groups)} groups to cache")
     model_log_service.append_log(f"📄 Document size: {document.file_size:,} bytes")
     model_log_service.append_log("=" * 50)
 
@@ -324,26 +341,44 @@ async def cache_document(doc_id: str):
                 content_length = len(group_content)
                 model_log_service.append_log(f"Starting cache for group {cached_count + 1}/{len(groups)}: {group_id} (content: {content_length} chars)")
 
+                # Both local and remote models need to call LLM inference
+                # Local: caches in KV memory for prefix matching
+                # Remote: actually calls remote API (no local KV cache effect, but still processes the content)
                 await _cache_content_in_kv(
                     content=group_content,
                     description=f"group '{group_id}' from document '{document.filename}'"
                 )
+
+                if is_remote:
+                    model_log_service.append_log(f"✅ Successfully processed group {cached_count + 1}/{len(groups)} with remote model: {group_id}")
+                else:
+                    model_log_service.append_log(f"✅ Successfully cached group {cached_count + 1}/{len(groups)}: {group_id}")
+
                 cached_count += 1
-                model_log_service.append_log(f"✅ Successfully cached group {cached_count}/{len(groups)}: {group_id}")
             except Exception as e:
                 model_log_service.append_log(f"❌ Failed to cache group {group_id}: {str(e)}")
                 failed_groups.append(group_id)
                 # Continue with other groups even if one fails
 
         model_log_service.append_log("=" * 50)
-        model_log_service.append_log(f"✅ Cache operation completed for document: {document.filename}")
-        model_log_service.append_log(f"📊 Successfully cached {cached_count}/{len(groups)} groups")
+        if is_remote:
+            model_log_service.append_log(f"✅ Cache operation completed for document: {document.filename}")
+            model_log_service.append_log(f"📊 Successfully processed {cached_count}/{len(groups)} groups with remote model ({current_model.provider})")
+            model_log_service.append_log(f"ℹ️  Note: Remote models don't use local KV cache, but content was sent to remote API")
+        else:
+            model_log_service.append_log(f"✅ Cache operation completed for document: {document.filename}")
+            model_log_service.append_log(f"📊 Successfully cached {cached_count}/{len(groups)} groups")
+            model_log_service.append_log("🚀 KV Cache is ready for prefix matching!")
+
         if failed_groups:
             model_log_service.append_log(f"❌ Failed groups: {', '.join(failed_groups)}")
-        model_log_service.append_log("🚀 KV Cache is ready for prefix matching!")
 
         # Return success even if some groups failed (partial success)
-        message = f"Document '{document.filename}' cached successfully. {cached_count}/{len(groups)} groups cached."
+        if is_remote:
+            message = f"Document '{document.filename}' processed successfully with remote model. {cached_count}/{len(groups)} groups sent to {current_model.provider}."
+        else:
+            message = f"Document '{document.filename}' cached successfully. {cached_count}/{len(groups)} groups cached."
+
         if failed_groups:
             message += f" Failed groups: {', '.join(failed_groups)}"
 

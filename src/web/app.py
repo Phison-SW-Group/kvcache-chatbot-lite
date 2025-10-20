@@ -94,11 +94,12 @@ class ChatbotClient:
         response.raise_for_status()
         return response.json()
 
-    def send_message(self, message: str, document_id: Optional[str] = None) -> str:
+    def send_message(self, message: str, document_id: Optional[str] = None, serving_name: Optional[str] = None) -> str:
         """Send a message and get response (non-streaming)"""
         payload = {
             "message": message,
-            "document_id": document_id
+            "document_id": document_id,
+            "serving_name": serving_name
         }
         response = self.client.post(
             f"{self.api_base_url}/session/{self.session_id}/messages",
@@ -107,11 +108,12 @@ class ChatbotClient:
         response.raise_for_status()
         return response.json()["message"]
 
-    def stream_message(self, message: str, document_id: Optional[str] = None):
+    def stream_message(self, message: str, document_id: Optional[str] = None, serving_name: Optional[str] = None):
         """Send a message and get streaming response, yields tuples of (chunk, rag_info)"""
         payload = {
             "message": message,
-            "document_id": document_id
+            "document_id": document_id,
+            "serving_name": serving_name
         }
 
         rag_info = None
@@ -252,7 +254,8 @@ class ChatbotWeb:
         self,
         message: str,
         history: List[Tuple[str, str]],
-        selected_doc: Optional[str]
+        selected_doc: Optional[str],
+        selected_model: Optional[str] = None
     ) -> Generator[Tuple[List[Tuple[str, str]], str, str], None, None]:
         """
         Handle chat interaction
@@ -261,6 +264,7 @@ class ChatbotWeb:
             message: User message
             history: Chat history
             selected_doc: Selected document ID (None if no document selected)
+            selected_model: Selected model serving name (None if no model selected)
 
         Yields:
             Updated history, empty message box, and updated logs
@@ -278,11 +282,16 @@ class ChatbotWeb:
         if selected_doc and selected_doc != "None":
             doc_id = selected_doc
 
+        # Parse model serving name from dropdown value
+        model_name = None
+        if selected_model and selected_model != "None":
+            model_name = selected_model
+
         # Stream response from backend
         full_response = ""
         rag_info_displayed = False
         try:
-            for chunk, rag_info in self.client.stream_message(message, doc_id):
+            for chunk, rag_info in self.client.stream_message(message, doc_id, model_name):
                 # Update document selection message with RAG info
                 if rag_info and not rag_info_displayed:
                     rag_preview = self._format_rag_preview(rag_info)
@@ -967,7 +976,7 @@ class ChatbotWeb:
             # Chat events
             msg.submit(
                 fn=self.chat_with_bot,
-                inputs=[msg, chatbot, doc_dropdown],
+                inputs=[msg, chatbot, doc_dropdown, model_dropdown],
                 outputs=[chatbot, msg, deploy_log]
             )
 

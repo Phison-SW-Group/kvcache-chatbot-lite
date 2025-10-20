@@ -52,14 +52,14 @@ async def lifespan(app: FastAPI):
     print(f"   llama-server will write logs to this file via --log-file parameter")
 
     # Initialize LLM service with the first configured model
-    if not settings.models:
+    if not settings.all_models:
         error_msg = "No models configured in env.yaml"
         print(f"❌ {error_msg}")
         model_log_service.append_log(f"ERROR: {error_msg}")
         raise ValueError(error_msg)
 
     # Initialize LLM service with the first configured model
-    first_model = settings.models[0]
+    first_model = settings.all_models[0]
 
     # Validate first model configuration
     if not first_model.api_key or first_model.api_key == "empty":

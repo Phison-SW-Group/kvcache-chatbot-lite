@@ -45,15 +45,22 @@ class TokenizerManager:
         self.tokenizer_error = None
 
         try:
-            # Find model configuration
+            # Find model configuration (supports new local/remote layout)
             selected_model = None
+            all_models = getattr(settings, "all_models", [])
+
             if serving_name:
-                for model in settings.models:
+                for model in all_models:
                     if model.serving_name == serving_name:
                         selected_model = model
                         break
             else:
-                selected_model = settings.models[0] if settings.models else None
+                # Prefer first local model with tokenizer, else any model with tokenizer
+                local_models = getattr(settings, "get_local_models", lambda: [])()
+                for model in (local_models or all_models):
+                    if getattr(model, "tokenizer", None):
+                        selected_model = model
+                        break
 
             if not selected_model:
                 self.tokenizer_status = TokenizerStatus.ERROR

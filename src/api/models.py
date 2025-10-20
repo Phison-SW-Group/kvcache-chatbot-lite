@@ -18,6 +18,7 @@ class MessageRequest(BaseModel):
     message: str = Field(..., description="User message")
     document_id: Optional[str] = Field(default=None, description="Document ID to use as context")
     use_rag: bool = Field(default=True, description="Whether to use RAG retrieval for document context")
+    serving_name: Optional[str] = Field(default=None, description="Selected model serving name for this request")
 
 
 class ChatResponse(BaseModel):

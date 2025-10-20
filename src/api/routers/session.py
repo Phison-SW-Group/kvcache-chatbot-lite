@@ -9,6 +9,7 @@ import json
 from models import MessageRequest, ChatResponse, SessionInfo
 from services.session_service import session_manager
 from services.llm_service import llm_service
+from config import settings
 from services.document_manager import document_manager
 from services.rag_service import rag_service
 
@@ -150,6 +151,15 @@ async def send_message(session_id: str, request: MessageRequest):
     # Add user message to history
     session.add_message("user", request.message)
 
+    # Reconfigure LLM on demand if serving_name is provided
+    if request.serving_name:
+        selected = settings.get_model_by_serving_name(request.serving_name)
+        if selected:
+            params = selected.completion_params.model_dump(exclude={'custom_params'})
+            if selected.completion_params.custom_params:
+                params.update(selected.completion_params.custom_params)
+            llm_service.reconfigure(model=selected.serving_name, api_key=selected.api_key, base_url=selected.base_url, **params)
+
     # Prepare messages for LLM
     messages = session.get_messages_for_llm()
 
@@ -205,6 +215,15 @@ async def stream_message(session_id: str, request: MessageRequest):
             yield f"data: {data}\n\n"
 
         try:
+            # Reconfigure LLM on demand if serving_name is provided
+            if request.serving_name:
+                selected = settings.get_model_by_serving_name(request.serving_name)
+                if selected:
+                    params = selected.completion_params.model_dump(exclude={'custom_params'})
+                    if selected.completion_params.custom_params:
+                        params.update(selected.completion_params.custom_params)
+                    llm_service.reconfigure(model=selected.serving_name, api_key=selected.api_key, base_url=selected.base_url, **params)
+
             async for chunk in llm_service.generate_response(messages, stream=True):
                 full_response += chunk
                 # Send chunk as SSE

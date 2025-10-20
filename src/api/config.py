@@ -62,11 +62,60 @@ class CompletionParamsSettings(BaseSettings):
     )
 
 
+class LocalModelSettings(BaseSettings):
+    """Local model configuration for self-hosted models"""
+    model_name_or_path: str
+    serving_name: Optional[str] = None
+    tokenizer: Optional[str] = None  # HuggingFace tokenizer identifier
+    model_type: str = "local"
+
+    # Completion parameters for this model
+    completion_params: CompletionParamsSettings = Field(default_factory=CompletionParamsSettings)
+
+    model_config = SettingsConfigDict(
+        env_prefix="LOCAL_MODEL_",
+        case_sensitive=True,
+    )
+
+    def model_post_init(self, __context) -> None:
+        """Auto-compute serving name if not provided"""
+        if self.serving_name is None:
+            self.serving_name = self.model_name_or_path
+
+
+class RemoteModelSettings(BaseSettings):
+    """Remote model configuration for external models (cloud APIs, other computers, etc.)"""
+    provider: str  # "openai", "azure", "anthropic", "google", "local_remote", etc.
+    model: str  # Model identifier (e.g., "gpt-4o-mini", "claude-3-sonnet", "llama-3.1-8b")
+    serving_name: Optional[str] = None
+    tokenizer: Optional[str] = None  # HuggingFace tokenizer identifier
+    base_url: str
+    api_key: str
+    model_type: str = "remote"
+
+    # Completion parameters for this model
+    completion_params: CompletionParamsSettings = Field(default_factory=CompletionParamsSettings)
+
+    model_config = SettingsConfigDict(
+        env_prefix="REMOTE_MODEL_",
+        case_sensitive=True,
+    )
+
+    def model_post_init(self, __context) -> None:
+        """Auto-compute serving name if not provided"""
+        if self.serving_name is None:
+            self.serving_name = self.model
+
+
 class ModelSettings(BaseSettings):
-    """Individual model configuration with its own API and completion settings"""
+    """Unified model configuration - supports both local and remote models"""
     model_name_or_path: Optional[str] = None
     serving_name: Optional[str] = None
     tokenizer: Optional[str] = None  # HuggingFace tokenizer identifier
+    model_type: str = "local"  # "local" or "remote"
+
+    # For remote models
+    provider: Optional[str] = None  # Only for remote models
 
     # API settings for this model
     base_url: Optional[str] = None  # Default: None
@@ -142,7 +191,12 @@ class Settings(BaseSettings):
     # Nested settings
     api: APISettings = Field(default_factory=APISettings)
     server: ServerSettings = Field(default_factory=ServerSettings)
-    models: List[ModelSettings] = Field(default_factory=list)
+
+    # New model configuration structure
+    models: Dict[str, List[ModelSettings]] = Field(default_factory=dict)
+    # Legacy support - will be populated from new structure
+    all_models: List[ModelSettings] = Field(default_factory=list)
+
     documents: DocumentSettings = Field(default_factory=DocumentSettings)
 
     model_config = SettingsConfigDict(
@@ -177,42 +231,35 @@ class Settings(BaseSettings):
                     cache_dir=server_data.get('cache_dir')
                 )
 
-            # Load models settings
+            # Load models settings - new structure
             if 'models' in yaml_data:
                 models_data = yaml_data['models']
-                self.models = []
-                for model_data in models_data:
-                    # Load completion params for this model
-                    completion_params_data = model_data.get('completion_params', {})
+                self.models = {}
+                self.all_models = []
 
-                    # Handle custom parameters
-                    completion_kwargs = {}
-                    custom_params = {}
+                # Process local models
+                if 'local_models' in models_data:
+                    self.models['local_models'] = []
+                    for model_data in models_data['local_models']:
+                        model_settings = self._create_model_settings(model_data, "local")
+                        self.models['local_models'].append(model_settings)
+                        self.all_models.append(model_settings)
 
-                    # Get valid field names from CompletionParamsSettings
-                    valid_fields = set(CompletionParamsSettings.model_fields.keys())
+                # Process remote models (cloud APIs, other computers, etc.)
+                if 'remote_models' in models_data:
+                    self.models['remote_models'] = []
+                    for model_data in models_data['remote_models']:
+                        model_settings = self._create_model_settings(model_data, "remote")
+                        self.models['remote_models'].append(model_settings)
+                        self.all_models.append(model_settings)
 
-                    for key, value in completion_params_data.items():
-                        if key in valid_fields:
-                            completion_kwargs[key] = value
-                        else:
-                            custom_params[key] = value
-
-                    if custom_params:
-                        completion_kwargs['custom_params'] = custom_params
-
-                    completion_params = CompletionParamsSettings(**completion_kwargs)
-
-                    # Create model settings
-                    model_settings = ModelSettings(
-                        model_name_or_path=model_data.get('model_name_or_path'),
-                        serving_name=model_data.get('serving_name'),
-                        tokenizer=model_data.get('tokenizer'),
-                        base_url=model_data.get('base_url'),
-                        api_key=model_data.get('api_key'),
-                        completion_params=completion_params
-                    )
-                    self.models.append(model_settings)
+                # Legacy support: if models is a list (old format)
+                elif isinstance(models_data, list):
+                    self.models['legacy'] = []
+                    for model_data in models_data:
+                        model_settings = self._create_model_settings(model_data, "local")
+                        self.models['legacy'].append(model_settings)
+                        self.all_models.append(model_settings)
 
 
             print("✅ YAML configuration loaded successfully")
@@ -220,17 +267,76 @@ class Settings(BaseSettings):
         except Exception as e:
             print(f"❌ Error loading YAML config: {e}")
 
+    def _create_model_settings(self, model_data: dict, model_type: str) -> ModelSettings:
+        """Create ModelSettings from YAML data"""
+        # Load completion params for this model
+        completion_params_data = model_data.get('completion_params', {})
+
+        # Handle custom parameters
+        completion_kwargs = {}
+        custom_params = {}
+
+        # Get valid field names from CompletionParamsSettings
+        valid_fields = set(CompletionParamsSettings.model_fields.keys())
+
+        for key, value in completion_params_data.items():
+            if key in valid_fields:
+                completion_kwargs[key] = value
+            else:
+                custom_params[key] = value
+
+        if custom_params:
+            completion_kwargs['custom_params'] = custom_params
+
+        completion_params = CompletionParamsSettings(**completion_kwargs)
+
+        # Create model settings based on type
+        if model_type == "local":
+            return ModelSettings(
+                model_name_or_path=model_data.get('model_name_or_path'),
+                serving_name=model_data.get('serving_name'),
+                tokenizer=model_data.get('tokenizer'),
+                model_type="local",
+                base_url=model_data.get('base_url'),  # Support base_url for local models
+                api_key=model_data.get('api_key', "not-needed"),  # Support api_key for local models
+                completion_params=completion_params
+            )
+        else:  # remote
+            return ModelSettings(
+                model_name_or_path=model_data.get('model'),  # For remote, use 'model' as model_name_or_path
+                serving_name=model_data.get('serving_name'),
+                tokenizer=model_data.get('tokenizer'),
+                model_type="remote",
+                provider=model_data.get('provider'),
+                base_url=model_data.get('base_url'),
+                api_key=model_data.get('api_key'),
+                completion_params=completion_params
+            )
+
     def _validate_config(self):
         """Validate the complete configuration"""
         # Validate at least one model is configured
-        if not self.models:
+        if not self.models and not self.all_models:
             print("⚠️  No models configured")
         else:
-            for i, model in enumerate(self.models):
-                if not model.model_name_or_path:
-                    print(f"⚠️  Model {i+1} missing model_name_or_path")
-                else:
-                    print(f"✅ Model {i+1} configured: {model.serving_name or model.model_name_or_path}")
+            # Validate local models
+            if 'local_models' in self.models:
+                print(f"✅ Local models configured: {len(self.models['local_models'])}")
+                for i, model in enumerate(self.models['local_models']):
+                    if not model.model_name_or_path:
+                        print(f"⚠️  Local model {i+1} missing model_name_or_path")
+                    else:
+                        print(f"  ✅ {model.serving_name or model.model_name_or_path}")
+
+            # Validate remote models
+            if 'remote_models' in self.models:
+                print(f"✅ Remote models configured: {len(self.models['remote_models'])}")
+                for i, model in enumerate(self.models['remote_models']):
+                    if not model.model_name_or_path:
+                        print(f"⚠️  Remote model {i+1} missing model identifier")
+                    else:
+                        provider_info = f" ({model.provider})" if model.provider else ""
+                        print(f"  ✅ {model.serving_name or model.model_name_or_path}{provider_info}")
 
         # Validate server settings
         if self.server.exe_path:
@@ -251,23 +357,47 @@ class Settings(BaseSettings):
         """
         # If specific model identifier provided, search for that model
         if model_identifier:
-            for model in self.models:
+            for model in self.all_models:
                 if model.serving_name == model_identifier or model.model_name_or_path == model_identifier:
                     return model.tokenizer
             return None
 
         # If tokenizer_model is set in documents config, use that
         if self.documents.tokenizer_model:
-            for model in self.models:
+            for model in self.all_models:
                 if model.serving_name == self.documents.tokenizer_model or model.model_name_or_path == self.documents.tokenizer_model:
                     return model.tokenizer
 
         # Otherwise, automatically use the first model that has a tokenizer configured
-        for model in self.models:
+        for model in self.all_models:
             if model.tokenizer:
                 return model.tokenizer
 
         return None
+
+    def get_local_models(self) -> List[ModelSettings]:
+        """Get all local models"""
+        return self.models.get('local_models', [])
+
+    def get_remote_models(self) -> List[ModelSettings]:
+        """Get all remote models"""
+        return self.models.get('remote_models', [])
+
+    def get_model_by_serving_name(self, serving_name: str) -> Optional[ModelSettings]:
+        """Get model by serving name from all models"""
+        for model in self.all_models:
+            if model.serving_name == serving_name:
+                return model
+        return None
+
+    def get_models_by_type(self, model_type: str) -> List[ModelSettings]:
+        """Get models by type (local or remote)"""
+        if model_type == "local":
+            return self.get_local_models()
+        elif model_type == "remote":
+            return self.get_remote_models()
+        else:
+            return []
 
 
 # Create global settings instance

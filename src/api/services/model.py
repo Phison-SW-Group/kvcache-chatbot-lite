@@ -59,21 +59,24 @@ class ModelServerConfig:
             serving_name: Optional serving name to select specific model.
                          If None, uses the first model in config.
         """
-        # Find the model by serving_name, or use first model if not specified
+        # Only local models are valid for llama-server
+        local_models = settings.get_local_models() if hasattr(settings, "get_local_models") else []
+
+        # Find the model by serving_name among local models, or use first local model
         selected_model = None
         if serving_name:
-            for model in settings.models:
+            for model in local_models:
                 if model.serving_name == serving_name:
                     selected_model = model
                     break
             if not selected_model:
-                raise ValueError(f"Model with serving_name '{serving_name}' not found in configuration")
+                raise ValueError(f"Local model with serving_name '{serving_name}' not found in configuration")
         else:
-            # Default to first model
-            selected_model = settings.models[0] if settings.models else None
+            # Default to first local model
+            selected_model = local_models[0] if local_models else None
 
         if not selected_model:
-            raise ValueError("No models configured in settings")
+            raise ValueError("No local models configured in settings")
 
         return cls(
             exe=settings.server.exe_path or "",

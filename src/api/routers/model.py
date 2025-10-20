@@ -49,19 +49,23 @@ class ModelInfo(BaseModel):
     """Model information"""
     model_name_or_path: str
     serving_name: str
+    model_type: str  # "local" or "remote"
+    provider: Optional[str] = None  # Only for remote models
 
 
 @router.get("/list")
 async def list_models() -> List[ModelInfo]:
     """
-    Get list of all configured models from settings
+    Get list of all configured models from settings (both local and remote)
     """
     try:
         models = []
-        for model_config in settings.models:
+        for model_config in settings.all_models:
             models.append(ModelInfo(
                 model_name_or_path=model_config.model_name_or_path,
-                serving_name=model_config.serving_name
+                serving_name=model_config.serving_name,
+                model_type=model_config.model_type,
+                provider=model_config.provider if model_config.model_type == "remote" else None
             ))
         return models
     except Exception as e:
@@ -76,11 +80,12 @@ async def start_model_without_reset(request: ModelUpRequest):
     """
     Start model without resetting existing configuration
     Also loads tokenizer for the selected model
+    Only works for local models - remote models don't need to be started
     """
     try:
         # Find the selected model configuration
         selected_model = None
-        for model_config in settings.models:
+        for model_config in settings.all_models:
             if model_config.serving_name == request.serving_name:
                 selected_model = model_config
                 break
@@ -89,6 +94,16 @@ async def start_model_without_reset(request: ModelUpRequest):
             raise HTTPException(
                 status_code=404,
                 detail=f"Model '{request.serving_name}' not found in configuration"
+            )
+
+        # Check if it's a remote model
+        if selected_model.model_type == "remote":
+            return ModelResponse(
+                status="info",
+                message=f"❌ Remote model '{selected_model.serving_name}' does not require startup. Remote models ({selected_model.provider}) are always ready to use.",
+                timestamp=datetime.now(),
+                model_name=request.serving_name,
+                details={"model_type": "remote", "provider": selected_model.provider}
             )
 
         # Update LLM service configuration to match the selected model
@@ -151,11 +166,12 @@ async def start_model_with_reset(request: ModelUpRequest):
     Start model with reset (restart with new configuration)
     This will also clear all uploaded documents since KV cache is reset
     Also loads tokenizer for the selected model
+    Only works for local models - remote models don't need to be started
     """
     try:
         # Find the selected model configuration
         selected_model = None
-        for model_config in settings.models:
+        for model_config in settings.all_models:
             if model_config.serving_name == request.serving_name:
                 selected_model = model_config
                 break
@@ -164,6 +180,16 @@ async def start_model_with_reset(request: ModelUpRequest):
             raise HTTPException(
                 status_code=404,
                 detail=f"Model '{request.serving_name}' not found in configuration"
+            )
+
+        # Check if it's a remote model
+        if selected_model.model_type == "remote":
+            return ModelResponse(
+                status="info",
+                message=f"❌ Remote model '{selected_model.serving_name}' does not require startup. Remote models ({selected_model.provider}) are always ready to use.",
+                timestamp=datetime.now(),
+                model_name=request.serving_name,
+                details={"model_type": "remote", "provider": selected_model.provider}
             )
 
         # Update LLM service configuration to match the selected model
@@ -231,9 +257,26 @@ async def start_model_with_reset(request: ModelUpRequest):
 @router.post("/down", response_model=ModelResponse)
 async def stop_model():
     """
-    Stop the currently running model and unload tokenizer
+    Stop the currently running local model and unload tokenizer
+    Remote models don't need to be stopped
     """
     try:
+        # Check if current model is remote by checking llm_service configuration
+        current_config = llm_service.get_current_config()
+        current_model_name = current_config.get("model")
+
+        # Find if current model is remote
+        if current_model_name:
+            current_model = settings.get_model_by_serving_name(current_model_name)
+            if current_model and current_model.model_type == "remote":
+                return ModelResponse(
+                    status="info",
+                    message=f"❌ Remote model '{current_model.serving_name}' does not need to be stopped. Remote models ({current_model.provider}) are always available.",
+                    timestamp=datetime.now(),
+                    model_name=current_model_name,
+                    details={"model_type": "remote", "provider": current_model.provider}
+                )
+
         result = await model_server.down()
 
         # Unload tokenizer
@@ -281,6 +324,67 @@ async def get_model_status():
         raise HTTPException(
             status_code=500,
             detail=f"Failed to get model status: {str(e)}"
+        )
+
+
+@router.post("/switch", response_model=ModelResponse)
+async def switch_model(request: ModelUpRequest):
+    """
+    Switch to a different model (local or remote)
+    For local models: just reconfigure LLM service (model needs to be started separately)
+    For remote models: reconfigure LLM service and ready to use immediately
+    """
+    try:
+        # Find the selected model configuration
+        selected_model = None
+        for model_config in settings.all_models:
+            if model_config.serving_name == request.serving_name:
+                selected_model = model_config
+                break
+
+        if not selected_model:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{request.serving_name}' not found in configuration"
+            )
+
+        # Update LLM service configuration to match the selected model
+        completion_params_dict = selected_model.completion_params.model_dump(exclude={'custom_params'})
+        if selected_model.completion_params.custom_params:
+            completion_params_dict.update(selected_model.completion_params.custom_params)
+
+        llm_service.reconfigure(
+            model=selected_model.serving_name,
+            api_key=selected_model.api_key,
+            base_url=selected_model.base_url,
+            **completion_params_dict
+        )
+        print(f"🔄 LLM service reconfigured for model: {selected_model.serving_name}")
+
+        # Load tokenizer if available
+        tokenizer_result = tokenizer_manager.load_tokenizer(request.serving_name)
+        print(f"🔧 Tokenizer: {tokenizer_result['message']}")
+
+        if selected_model.model_type == "remote":
+            message = f"✅ Switched to remote model '{selected_model.serving_name}' ({selected_model.provider}). Ready to use immediately!"
+        else:
+            message = f"✅ Switched to local model '{selected_model.serving_name}'. Please start the model before using."
+
+        return ModelResponse(
+            status="success",
+            message=message,
+            timestamp=datetime.now(),
+            model_name=request.serving_name,
+            details={
+                "model_type": selected_model.model_type,
+                "provider": selected_model.provider if selected_model.model_type == "remote" else None,
+                "tokenizer": tokenizer_result
+            }
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to switch model: {str(e)}"
         )
 
 

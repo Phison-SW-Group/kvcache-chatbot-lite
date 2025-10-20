@@ -73,13 +73,29 @@ class LLMService:
         Yields:
             Response text chunks
         """
-        # Validate configuration
-        if not self.api_key or self.api_key == "empty":
-            error_msg = (
-                "LLM service is not properly configured. "
-                "api_key is not set. Please configure it in env.yaml"
-            )
-            raise RuntimeError(error_msg)
+        # Validate configuration - if missing, attempt an automatic fallback
+        if not self.api_key or (self.api_key == "empty"):
+            try:
+                # Try to auto-select a usable model from settings
+                from config import settings
+                candidate = None
+                for m in getattr(settings, "all_models", []):
+                    if (m.api_key and m.api_key != "empty") or (m.api_key == "not-needed"):
+                        candidate = m
+                        break
+                if candidate is not None:
+                    params = candidate.completion_params.model_dump(exclude={'custom_params'})
+                    if candidate.completion_params.custom_params:
+                        params.update(candidate.completion_params.custom_params)
+                    self.reconfigure(model=candidate.serving_name, api_key=candidate.api_key, base_url=candidate.base_url, **params)
+                else:
+                    raise RuntimeError("LLM service auto-configuration failed: no valid model found")
+            except Exception:
+                error_msg = (
+                    "LLM service is not properly configured. "
+                    "api_key is not set. Please configure it in env.yaml"
+                )
+                raise RuntimeError(error_msg)
 
         async for chunk in self._openai_response(messages, stream):
             yield chunk
@@ -108,6 +124,10 @@ class LLMService:
                 "stream": stream,
                 **self.completion_params  # Include all completion parameters
             }
+
+            print(self.base_url)
+            print(self.api_key)
+            print(api_params)
 
             response = await client.chat.completions.create(**api_params)
 
