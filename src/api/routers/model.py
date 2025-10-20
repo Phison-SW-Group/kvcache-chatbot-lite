@@ -11,6 +11,7 @@ from pathlib import Path
 from services.model import model_server
 from services.document_manager import document_manager
 from services.tokenizer_manager import tokenizer_manager
+from services.llm_service import llm_service
 from config import settings
 
 router = APIRouter(prefix="/model", tags=["model"])
@@ -77,6 +78,32 @@ async def start_model_without_reset(request: ModelUpRequest):
     Also loads tokenizer for the selected model
     """
     try:
+        # Find the selected model configuration
+        selected_model = None
+        for model_config in settings.models:
+            if model_config.serving_name == request.serving_name:
+                selected_model = model_config
+                break
+
+        if not selected_model:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{request.serving_name}' not found in configuration"
+            )
+
+        # Update LLM service configuration to match the selected model
+        completion_params_dict = selected_model.completion_params.model_dump(exclude={'custom_params'})
+        if selected_model.completion_params.custom_params:
+            completion_params_dict.update(selected_model.completion_params.custom_params)
+
+        llm_service.reconfigure(
+            model=selected_model.serving_name,
+            api_key=selected_model.api_key,
+            base_url=selected_model.base_url,
+            **completion_params_dict
+        )
+        print(f"🔄 LLM service reconfigured for model: {selected_model.serving_name}")
+
         # Load tokenizer first
         tokenizer_result = tokenizer_manager.load_tokenizer(request.serving_name)
         print(f"🔧 Tokenizer: {tokenizer_result['message']}")
@@ -126,6 +153,32 @@ async def start_model_with_reset(request: ModelUpRequest):
     Also loads tokenizer for the selected model
     """
     try:
+        # Find the selected model configuration
+        selected_model = None
+        for model_config in settings.models:
+            if model_config.serving_name == request.serving_name:
+                selected_model = model_config
+                break
+
+        if not selected_model:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Model '{request.serving_name}' not found in configuration"
+            )
+
+        # Update LLM service configuration to match the selected model
+        completion_params_dict = selected_model.completion_params.model_dump(exclude={'custom_params'})
+        if selected_model.completion_params.custom_params:
+            completion_params_dict.update(selected_model.completion_params.custom_params)
+
+        llm_service.reconfigure(
+            model=selected_model.serving_name,
+            api_key=selected_model.api_key,
+            base_url=selected_model.base_url,
+            **completion_params_dict
+        )
+        print(f"🔄 LLM service reconfigured for model: {selected_model.serving_name}")
+
         # Load tokenizer first
         tokenizer_result = tokenizer_manager.load_tokenizer(request.serving_name)
         print(f"🔧 Tokenizer: {tokenizer_result['message']}")
@@ -209,15 +262,17 @@ async def stop_model():
 @router.get("/status")
 async def get_model_status():
     """
-    Get current model and tokenizer status
+    Get current model, tokenizer, and LLM service status
     """
     try:
         model_status = model_server.get_status()
         tokenizer_status = tokenizer_manager.get_status()
+        llm_config = llm_service.get_current_config()
 
         result = {
             **model_status,
             "tokenizer": tokenizer_status,
+            "llm_service": llm_config,
             "last_updated": datetime.now()
         }
 
