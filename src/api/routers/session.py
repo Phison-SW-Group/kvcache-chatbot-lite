@@ -56,7 +56,8 @@ def _prepare_document_context(request: MessageRequest):
         results = rag_service.retrieve_most_similar_group(
             query=request.message,
             groups=enriched_groups,
-            top_k=1
+            top_k=1,
+            document_name=doc.filename
         )
 
         print(f"DEBUG: RAG returned {len(results)} result(s)")
@@ -71,7 +72,8 @@ def _prepare_document_context(request: MessageRequest):
 
             context = {
                 "role": "system",
-                "content": f"Relevant context from document '{doc.filename}':\n\n{best_match.content}"
+                # "content": f"Relevant context from document '{doc.filename}':\n\n{best_match.content}"
+                "content": f"{best_match.content}\n\nRelevant to the document context above"
             }
 
             rag_info = {

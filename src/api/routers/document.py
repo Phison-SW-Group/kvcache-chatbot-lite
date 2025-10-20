@@ -26,6 +26,73 @@ from services.model import model_server
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
+# ============================================================================
+# Cache Helper Functions
+# ============================================================================
+
+async def _cache_content_in_kv(content: str, description: str = "content") -> None:
+    """
+    Helper function to cache content in KV Cache by running inference
+
+    This function:
+    1. Validates model server is running
+    2. Validates LLM service configuration matches running model
+    3. Runs inference with content as system message (max_tokens=2)
+    4. Logs operation details
+
+    Args:
+        content: Text content to cache
+        description: Description for logging (e.g., "document", "group")
+
+    Raises:
+        HTTPException: If model server not running or configuration mismatch
+    """
+    # Step 1: Check if model server is running
+    if not model_server._is_running():
+        raise HTTPException(
+            status_code=503,
+            detail="Model server is not running. Please start the model server first."
+        )
+
+    # Step 2: Validate LLM service configuration matches running model
+    current_config = llm_service.get_current_config()
+    model_config = model_server.config
+
+    if not current_config['model'] or current_config['model'] != model_config.alias:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Model configuration mismatch. LLM service is configured for '{current_config['model']}' but model server is running '{model_config.alias}'. Please restart the model."
+        )
+
+    # Step 3: Log current model and configuration
+    from services.model_log import model_log_service
+    model_log_service.append_log(f"Cache operation for {description} using model: {current_config['model']}")
+    model_log_service.append_log(f"Model base_url: {current_config['base_url']}")
+
+    # Step 4: Prepare messages and run inference
+    messages = [
+        {
+            "role": "system",
+            "content": content
+        }
+    ]
+
+    # Temporarily override max_tokens to 2 (we only care about caching)
+    original_max_tokens = llm_service.completion_params.get('max_tokens')
+    llm_service.completion_params['max_tokens'] = 2
+
+    try:
+        # Run inference to populate KV Cache
+        async for _ in llm_service.generate_response(messages, stream=False):
+            pass  # We don't care about the response, just caching
+    finally:
+        # Restore original max_tokens
+        if original_max_tokens is not None:
+            llm_service.completion_params['max_tokens'] = original_max_tokens
+        else:
+            llm_service.completion_params.pop('max_tokens', None)
+
+
 # Ensure upload directory exists
 os.makedirs(settings.documents.upload_dir, exist_ok=True)
 
@@ -203,25 +270,20 @@ async def delete_document(doc_id: str):
 @router.post("/cache/{doc_id}")
 async def cache_document(doc_id: str):
     """
-    Cache an already uploaded document in KV Cache
+    Cache an already uploaded document in KV Cache by groups
 
-    This endpoint performs caching for an existing document:
-    1. Retrieve document content from document manager
-    2. Run inference with document content as system message (max_tokens=2)
-       - This populates the KV Cache in memory
+    This endpoint performs caching for an existing document by processing each group separately:
+    1. Retrieve document from document manager
+    2. Get all groups from the document
+    3. Run inference for each group individually (max_tokens=2)
+       - This populates the KV Cache in memory for each group
+       - Each group is cached separately for better granularity
        - The cache is immediately available for subsequent queries
-       - Prefix matching will accelerate future requests with the same document
+       - Prefix matching will accelerate future requests with the same document groups
 
     No server restart is needed - the cache remains in memory and is ready for use.
     """
-    # Step 0: Check if model server is running
-    if not model_server._is_running():
-        raise HTTPException(
-            status_code=503,
-            detail="Model server is not running. Please start the model server first."
-        )
-
-    # Step 1: Get document from document manager
+    # Get document from document manager
     document = document_manager.get_document(doc_id)
     if not document:
         raise HTTPException(
@@ -229,172 +291,78 @@ async def cache_document(doc_id: str):
             detail=f"Document with ID '{doc_id}' not found"
         )
 
-    # Ensure document content is loaded
-    if not document.full_text:
+    # Get all groups from the document
+    groups = document.get_groups()
+    if not groups:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Document has no groups to cache"
+        )
+
+    # Log cache operation start
+    from services.model_log import model_log_service
+    model_log_service.append_log(f"🚀 Starting cache operation for document: {document.filename} (doc_id={doc_id})")
+    model_log_service.append_log(f"📊 Document has {len(groups)} groups to cache")
+    model_log_service.append_log(f"📄 Document size: {document.file_size:,} bytes")
+    model_log_service.append_log("=" * 50)
+
+    # Cache each group individually
+    cached_count = 0
+    failed_groups = []
+
+    try:
+        for group in groups:
+            group_id = group.get('group_id', '')
+            group_content = group.get('merged_content', '')
+
+            if not group_content:
+                model_log_service.append_log(f"Skipping empty group: {group_id}")
+                continue
+
+            try:
+                # Log group details before caching
+                content_length = len(group_content)
+                model_log_service.append_log(f"Starting cache for group {cached_count + 1}/{len(groups)}: {group_id} (content: {content_length} chars)")
+
+                await _cache_content_in_kv(
+                    content=group_content,
+                    description=f"group '{group_id}' from document '{document.filename}'"
+                )
+                cached_count += 1
+                model_log_service.append_log(f"✅ Successfully cached group {cached_count}/{len(groups)}: {group_id}")
+            except Exception as e:
+                model_log_service.append_log(f"❌ Failed to cache group {group_id}: {str(e)}")
+                failed_groups.append(group_id)
+                # Continue with other groups even if one fails
+
+        model_log_service.append_log("=" * 50)
+        model_log_service.append_log(f"✅ Cache operation completed for document: {document.filename}")
+        model_log_service.append_log(f"📊 Successfully cached {cached_count}/{len(groups)} groups")
+        if failed_groups:
+            model_log_service.append_log(f"❌ Failed groups: {', '.join(failed_groups)}")
+        model_log_service.append_log("🚀 KV Cache is ready for prefix matching!")
+
+        # Return success even if some groups failed (partial success)
+        message = f"Document '{document.filename}' cached successfully. {cached_count}/{len(groups)} groups cached."
+        if failed_groups:
+            message += f" Failed groups: {', '.join(failed_groups)}"
+
+        return {
+            "doc_id": doc_id,
+            "filename": document.filename,
+            "file_size": document.file_size,
+            "cached_groups": cached_count,
+            "total_groups": len(groups),
+            "failed_groups": failed_groups,
+            "message": message
+        }
+
+    except Exception as e:
+        model_log_service.append_log(f"Cache operation failed for document {document.filename}: {str(e)}")
         raise HTTPException(
             status_code=500,
-            detail="Document content is not available. Please re-upload the document."
+            detail=f"Error caching document: {str(e)}"
         )
-
-    # Step 2: Pre-cache document content via inference
-    # Prepare messages with only system role containing document content
-    messages = [
-        {
-            "role": "system",
-            "content": document.full_text
-        }
-    ]
-
-    # Run inference with max_tokens=2 (we only care about caching the prefix)
-    # Temporarily override max_tokens
-    original_max_tokens = llm_service.max_tokens
-    llm_service.max_tokens = 2
-
-    try:
-        # Log cache operation
-        from services.model_log import model_log_service
-        model_log_service.append_log(f"Cache operation started for document: {document.filename} (doc_id={doc_id})")
-        model_log_service.append_log(f"Document content length: {len(document.content)} chars")
-
-        # Run inference to populate KV Cache
-        async for _ in llm_service.generate_response(messages, stream=False):
-            pass  # We don't care about the response, just caching
-
-        model_log_service.append_log(f"Cache operation completed for document: {document.filename}")
-    except Exception as e:
-        from services.model_log import model_log_service
-        model_log_service.append_log(f"Cache operation failed for document {document.filename}: {str(e)}")
-        raise
-    finally:
-        # Restore original max_tokens
-        llm_service.max_tokens = original_max_tokens
-
-    # Step 3: KV Cache is now populated and ready for use
-    return {
-        "doc_id": doc_id,
-        "filename": document.filename,
-        "file_size": document.file_size,
-        "message": f"Document '{document.filename}' cached successfully. KV Cache ready for prefix matching."
-    }
-
-
-@router.post("/upload_and_cache", response_model=DocumentUploadResponse)
-async def upload_document_and_cache(file: UploadFile = File(...)):
-    """
-    Upload a PDF document and pre-cache it in KV Cache
-
-    This endpoint performs two steps:
-    1. Upload and process the PDF document with chunking
-    2. Run inference with document content as system message (max_tokens=2)
-       - This populates the KV Cache in memory
-       - The cache is immediately available for subsequent queries
-       - Prefix matching will accelerate future requests with the same document
-
-    No server restart is needed - the cache remains in memory and is ready for use.
-    """
-    # Step 1: Upload document (reuse existing logic)
-    # Validate file extension
-    file_extension = Path(file.filename).suffix.lower()
-
-    if file_extension not in settings.documents.allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type: {file_extension}. "
-                   f"Allowed types: {', '.join(settings.documents.allowed_extensions)}"
-        )
-
-    # Check file size
-    file_content = await file.read()
-    file_size = len(file_content)
-
-    if file_size > settings.documents.max_file_size:
-        raise HTTPException(
-            status_code=400,
-            detail=f"File too large. Maximum size: {settings.documents.max_file_size / (1024*1024):.1f}MB"
-        )
-
-    # Generate unique filename
-    import uuid
-    unique_id = str(uuid.uuid4())[:8]
-    safe_filename = f"{unique_id}_{file.filename}"
-    file_path = Path(settings.documents.upload_dir) / safe_filename
-
-    try:
-        # Save file
-        async with aiofiles.open(file_path, 'wb') as f:
-            await f.write(file_content)
-
-        # Process document to extract text and create chunks
-        processed_doc = await document_service.process_document(file_path)
-
-        # Convert DocumentChunk objects to ChunkMetadata objects
-        from services.document_manager import ChunkMetadata
-        chunks = [
-            ChunkMetadata(**chunk.to_dict())
-            for chunk in processed_doc.chunks
-        ]
-
-        # Store in document manager
-        doc_id = document_manager.add_document(
-            filename=file.filename,
-            file_size=file_size,
-            file_path=file_path,
-            full_text=processed_doc.full_text,
-            chunks=chunks,
-            total_pages=processed_doc.total_pages,
-            tokenizer=processed_doc.tokenizer
-        )
-
-        # Step 2: Pre-cache document content via inference
-        # Prepare messages with only system role containing document content
-        messages = [
-            {
-                "role": "system",
-                "content": processed_doc.full_text
-            }
-        ]
-
-        # Run inference with max_tokens=2 (we only care about caching the prefix)
-        # Temporarily override max_tokens
-        original_max_tokens = llm_service.max_tokens
-        llm_service.max_tokens = 2
-
-        try:
-            # Run inference to populate KV Cache
-            async for _ in llm_service.generate_response(messages, stream=False):
-                pass  # We don't care about the response, just caching
-        finally:
-            # Restore original max_tokens
-            llm_service.max_tokens = original_max_tokens
-
-        # Step 3: KV Cache is now populated and ready for use
-        # No need to restart - the cache is already in memory and will be reused
-        # for subsequent queries with the same document prefix
-        #
-        # Note: The model server uses --kv-cache-resume-policy based on its startup mode:
-        # - If started with reset=True: cache is fresh for this session
-        # - If started with reset=False: cache is loaded from previous sessions
-        # Either way, the cache from Step 2 is now available for prefix matching
-
-        return DocumentUploadResponse(
-            doc_id=doc_id,
-            filename=file.filename,
-            file_size=file_size,
-            total_pages=processed_doc.total_pages,
-            total_chunks=processed_doc.total_chunks,
-            message=f"Document '{file.filename}' uploaded and cached successfully with {processed_doc.total_chunks} chunks. KV Cache ready for prefix matching."
-        )
-
-    except ValueError as e:
-        # Clean up file on error
-        if file_path.exists():
-            file_path.unlink()
-        raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        # Clean up file on error
-        if file_path.exists():
-            file_path.unlink()
-        raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
 
 @router.get("/{doc_id}/groups", response_model=List[GroupInfo])
@@ -426,165 +394,3 @@ async def get_document_groups(doc_id: str):
         ))
 
     return group_infos
-
-
-@router.post("/cache_group", response_model=CacheGroupResponse)
-async def cache_single_group(request: CacheGroupRequest):
-    """
-    Cache a single group from a document
-
-    This endpoint caches a specific group by running inference with the group's
-    merged content as a system message. This populates the KV Cache for that group.
-    """
-    # Check if model server is running
-    if not model_server._is_running():
-        raise HTTPException(
-            status_code=503,
-            detail="Model server is not running. Please start the model server first."
-        )
-
-    # Get document
-    document = document_manager.get_document(request.doc_id)
-    if not document:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Document with ID '{request.doc_id}' not found"
-        )
-
-    # Get specific group
-    group = document.get_group_by_id(request.group_id)
-    if not group:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Group with ID '{request.group_id}' not found in document"
-        )
-
-    # Prepare messages with group content
-    group_content = group.get('merged_content', '')
-    if not group_content:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Group '{request.group_id}' has no content"
-        )
-
-    messages = [
-        {
-            "role": "system",
-            "content": group_content
-        }
-    ]
-
-    # Run inference with max_tokens=2 to cache
-    original_max_tokens = llm_service.max_tokens
-    llm_service.max_tokens = 2
-
-    try:
-        from services.model_log import model_log_service
-        model_log_service.append_log(
-            f"Cache operation started for group: {request.group_id} "
-            f"(doc_id={request.doc_id}, tokens={group.get('total_tokens', 0)})"
-        )
-
-        async for _ in llm_service.generate_response(messages, stream=False):
-            pass
-
-        model_log_service.append_log(f"Cache operation completed for group: {request.group_id}")
-
-        return CacheGroupResponse(
-            doc_id=request.doc_id,
-            group_id=request.group_id,
-            cached_groups=1,
-            total_groups=len(document.get_groups()),
-            message=f"Group '{request.group_id}' cached successfully"
-        )
-    except Exception as e:
-        from services.model_log import model_log_service
-        model_log_service.append_log(f"Cache operation failed for group {request.group_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error caching group: {str(e)}")
-    finally:
-        llm_service.max_tokens = original_max_tokens
-
-
-@router.post("/cache_all_groups", response_model=CacheGroupResponse)
-async def cache_all_document_groups(request: CacheAllGroupsRequest):
-    """
-    Cache all groups from a document
-
-    This endpoint caches all groups in a document by running inference for each group.
-    This is useful for pre-warming the KV Cache with all document groups.
-    """
-    # Check if model server is running
-    if not model_server._is_running():
-        raise HTTPException(
-            status_code=503,
-            detail="Model server is not running. Please start the model server first."
-        )
-
-    # Get document
-    document = document_manager.get_document(request.doc_id)
-    if not document:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Document with ID '{request.doc_id}' not found"
-        )
-
-    groups = document.get_groups()
-    if not groups:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Document has no groups to cache"
-        )
-
-    # Cache each group
-    original_max_tokens = llm_service.max_tokens
-    llm_service.max_tokens = 2
-    cached_count = 0
-
-    try:
-        from services.model_log import model_log_service
-        model_log_service.append_log(
-            f"Batch cache operation started for document: {document.filename} "
-            f"(doc_id={request.doc_id}, total_groups={len(groups)})"
-        )
-
-        for group in groups:
-            group_id = group.get('group_id', '')
-            group_content = group.get('merged_content', '')
-
-            if not group_content:
-                model_log_service.append_log(f"Skipping empty group: {group_id}")
-                continue
-
-            messages = [
-                {
-                    "role": "system",
-                    "content": group_content
-                }
-            ]
-
-            try:
-                async for _ in llm_service.generate_response(messages, stream=False):
-                    pass
-                cached_count += 1
-                model_log_service.append_log(f"Cached group {cached_count}/{len(groups)}: {group_id}")
-            except Exception as e:
-                model_log_service.append_log(f"Failed to cache group {group_id}: {str(e)}")
-                # Continue with other groups even if one fails
-
-        model_log_service.append_log(
-            f"Batch cache operation completed: {cached_count}/{len(groups)} groups cached"
-        )
-
-        return CacheGroupResponse(
-            doc_id=request.doc_id,
-            group_id=None,
-            cached_groups=cached_count,
-            total_groups=len(groups),
-            message=f"Cached {cached_count}/{len(groups)} groups successfully"
-        )
-    except Exception as e:
-        from services.model_log import model_log_service
-        model_log_service.append_log(f"Batch cache operation failed: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error caching groups: {str(e)}")
-    finally:
-        llm_service.max_tokens = original_max_tokens

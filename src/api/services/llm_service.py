@@ -3,7 +3,6 @@ LLM service for generating chat responses
 Supports OpenAI compatible APIs
 """
 from typing import AsyncGenerator, List, Dict, Optional
-import asyncio
 
 
 class LLMService:
@@ -15,25 +14,49 @@ class LLMService:
     def __init__(
         self,
         model: Optional[str] = None,
-        api_key: Optional[str] = None,
+        api_key: str = "empty",
         base_url: Optional[str] = None,
-        temperature: float = 0.7,
-        max_tokens: int = 2000
+        **completion_params
     ):
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
-        self.temperature = temperature
-        self.max_tokens = max_tokens
-        self.use_real_llm = api_key is not None
+        self.completion_params = completion_params  # Store all completion parameters
+        # Don't create client here - create dynamically on each call to support model switching
 
-        # Initialize OpenAI client if API key is provided
-        if self.use_real_llm:
-            from openai import AsyncOpenAI
-            self.client = AsyncOpenAI(
-                api_key=api_key,
-                base_url=base_url
-            )
+    def _get_client(self):
+        """Get or create OpenAI client with current configuration"""
+        from openai import AsyncOpenAI
+        return AsyncOpenAI(
+            api_key=self.api_key,
+            base_url=self.base_url
+        )
+
+    def reconfigure(
+        self,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None,
+        base_url: Optional[str] = None,
+        **completion_params
+    ):
+        """Reconfigure LLM service (for switching models)"""
+        if model is not None:
+            self.model = model
+        if api_key is not None:
+            self.api_key = api_key
+        if base_url is not None:
+            self.base_url = base_url
+        if completion_params:
+            self.completion_params.update(completion_params)
+
+    def get_current_config(self) -> dict:
+        """Get current LLM service configuration"""
+        return {
+            "model": self.model,
+            "base_url": self.base_url,
+            "api_key": bool(self.api_key and self.api_key != "empty"),
+            "completion_params": self.completion_params
+        }
 
     async def generate_response(
         self,
@@ -50,18 +73,16 @@ class LLMService:
         Yields:
             Response text chunks
         """
-        if self.use_real_llm:
-            # Use real OpenAI compatible API
-            async for chunk in self._openai_response(messages, stream):
-                yield chunk
-        else:
-            # Use mock response for testing
-            if stream:
-                async for chunk in self._mock_streaming_response(messages):
-                    yield chunk
-            else:
-                response = await self._mock_complete_response(messages)
-                yield response
+        # Validate configuration
+        if not self.api_key or self.api_key == "empty":
+            error_msg = (
+                "LLM service is not properly configured. "
+                "api_key is not set. Please configure it in env.yaml"
+            )
+            raise RuntimeError(error_msg)
+
+        async for chunk in self._openai_response(messages, stream):
+            yield chunk
 
     async def _openai_response(
         self,
@@ -71,18 +92,24 @@ class LLMService:
         """Generate response using OpenAI compatible API"""
         try:
             from services.model_log import model_log_service
+
+            # Get client with current configuration (supports dynamic model switching)
+            client = self._get_client()
+
             # Log API request
             user_message = messages[-1]['content'] if messages else ""
             model_log_service.append_log(f"API Request - Model: {self.model}, Messages: {len(messages)}, Stream: {stream}")
             model_log_service.append_log(f"User message: {user_message[:100]}..." if len(user_message) > 100 else f"User message: {user_message}")
 
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=self.temperature,
-                max_tokens=self.max_tokens,
-                stream=stream
-            )
+            # Prepare API call parameters
+            api_params = {
+                "model": self.model,
+                "messages": messages,
+                "stream": stream,
+                **self.completion_params  # Include all completion parameters
+            }
+
+            response = await client.chat.completions.create(**api_params)
 
             if stream:
                 # Streaming response
@@ -109,55 +136,6 @@ class LLMService:
             model_log_service.append_log(f"API Error: {error_message}")
             yield error_message
 
-    async def _mock_streaming_response(self, messages: List[Dict[str, str]]) -> AsyncGenerator[str, None]:
-        """Mock streaming response for testing"""
-        user_message = messages[-1]['content'] if messages else ""
-
-        # Check if document context is being used
-        has_document_context = any("Document content:" in msg['content'] for msg in messages)
-
-        if has_document_context:
-            response = (
-                f"Based on the uploaded document and your question '{user_message}', "
-                f"I understand you're asking about the content in the document. "
-                f"This is a mock response demonstrating multi-turn conversation with document context. "
-                f"In production, a real LLM would analyze the document and provide a detailed answer."
-            )
-        else:
-            response = (
-                f"Thank you for your message: '{user_message}'. "
-                f"This is a mock streaming response from the LLM service. "
-                f"The conversation history has been preserved for multi-turn dialogue. "
-                f"In production, this would be replaced with a real LLM API call."
-            )
-
-        # Simulate streaming by sending word by word
-        words = response.split()
-        for i, word in enumerate(words):
-            await asyncio.sleep(0.05)  # Simulate network delay
-            if i < len(words) - 1:
-                yield word + " "
-            else:
-                yield word
-
-    async def _mock_complete_response(self, messages: List[Dict[str, str]]) -> str:
-        """Mock complete response for testing"""
-        user_message = messages[-1]['content'] if messages else ""
-
-        has_document_context = any("Document content:" in msg['content'] for msg in messages)
-
-        if has_document_context:
-            return (
-                f"Based on the uploaded document and your question '{user_message}', "
-                f"I can provide an answer using the document context. "
-                f"This is a mock response. In production, a real LLM would be used."
-            )
-        else:
-            return (
-                f"Thank you for your message: '{user_message}'. "
-                f"This is a mock response with conversation history preserved. "
-                f"In production, this would use a real LLM API."
-            )
 
     def _prepare_messages_with_document(
         self,
@@ -183,3 +161,27 @@ class LLMService:
 # Global LLM service instance
 llm_service = LLMService()
 
+
+def configure_llm_service(
+    model: Optional[str] = None,
+    api_key: str = "empty",
+    base_url: Optional[str] = None,
+    **completion_params
+):
+    """
+    Configure the global LLM service instance
+
+    Args:
+        model: Model name/identifier
+        api_key: API key for authentication
+        base_url: Base URL for API endpoint
+        **completion_params: All completion parameters (temperature, max_tokens, top_p, etc.)
+    """
+    global llm_service
+    llm_service = LLMService(
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
+        **completion_params
+    )
+    return llm_service
