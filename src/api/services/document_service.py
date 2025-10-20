@@ -449,13 +449,13 @@ class PdfProcessor:
 
     async def process(self, file_path: Path) -> ProcessedDocument:
         """
-        Extract text from PDF and split into chunks
+        Extract text from PDF and split into chunks (or use full document if no tokenizer)
 
         Args:
             file_path: Path to the PDF file
 
         Returns:
-            ProcessedDocument with chunks
+            ProcessedDocument with chunks (or single full-document chunk if no tokenizer)
         """
         # Extract text from PDF
         full_text = ""
@@ -471,40 +471,57 @@ class PdfProcessor:
                 page_texts.append((page_num + 1, page_text))
                 full_text += page_text + "\n\n"
 
-        # Split text into chunks
-        text_chunks = self.text_splitter.split_text(full_text)
-
-        # Create DocumentChunk objects with metadata
-        chunks = []
-        for idx, chunk_text in enumerate(text_chunks):
-            # Determine which pages this chunk spans
-            page_numbers = self._get_page_numbers_for_chunk(chunk_text, page_texts)
-
-            # Count tokens if tokenizer is available
-            token_count = self.count_tokens(chunk_text)
-
-            # Compute start/end page from page_numbers
-            start_page = min(page_numbers) if page_numbers else 1
-            end_page = max(page_numbers) if page_numbers else 1
-            page_key = f"{source_file}-page{start_page}"
-
-            chunk = DocumentChunk(
-                chunk_id=idx,
-                content=chunk_text,
-                page_numbers=page_numbers,
-                char_count=len(chunk_text),
-                token_count=token_count,
-                source_file=source_file,
-                chunk_index=idx,
-                start_page=start_page,
-                end_page=end_page,
-                page_key=page_key
-            )
-            chunks.append(chunk)
-
-        # Get current tokenizer name from tokenizer_manager
+        # Get current tokenizer status
         from services.tokenizer_manager import tokenizer_manager
         current_tokenizer = tokenizer_manager.tokenizer_name if tokenizer_manager.is_loaded() else None
+
+        # If no tokenizer, create single chunk with full document content
+        if current_tokenizer is None:
+            all_pages = list(range(1, total_pages + 1))
+            chunk = DocumentChunk(
+                chunk_id=0,
+                content=full_text,
+                page_numbers=all_pages,
+                char_count=len(full_text),
+                token_count=None,
+                source_file=source_file,
+                chunk_index=0,
+                start_page=1,
+                end_page=total_pages,
+                page_key=f"{source_file}-full"
+            )
+            chunks = [chunk]
+        else:
+            # Normal chunking with tokenizer
+            text_chunks = self.text_splitter.split_text(full_text)
+
+            # Create DocumentChunk objects with metadata
+            chunks = []
+            for idx, chunk_text in enumerate(text_chunks):
+                # Determine which pages this chunk spans
+                page_numbers = self._get_page_numbers_for_chunk(chunk_text, page_texts)
+
+                # Count tokens if tokenizer is available
+                token_count = self.count_tokens(chunk_text)
+
+                # Compute start/end page from page_numbers
+                start_page = min(page_numbers) if page_numbers else 1
+                end_page = max(page_numbers) if page_numbers else 1
+                page_key = f"{source_file}-page{start_page}"
+
+                chunk = DocumentChunk(
+                    chunk_id=idx,
+                    content=chunk_text,
+                    page_numbers=page_numbers,
+                    char_count=len(chunk_text),
+                    token_count=token_count,
+                    source_file=source_file,
+                    chunk_index=idx,
+                    start_page=start_page,
+                    end_page=end_page,
+                    page_key=page_key
+                )
+                chunks.append(chunk)
 
         return ProcessedDocument(
             full_text=full_text,
@@ -619,9 +636,10 @@ class DocumentService:
         processor = self._processors[extension]
         processed_doc = await processor.process(file_path)
 
-        # Trigger grouping if enabled and tokenizer is available
+        # Trigger grouping if enabled
         if self.grouping:
             if processed_doc.tokenizer is not None:
+                # Case 1: Tokenizer available - normal token-based grouping
                 print(f"✅ Tokenizer detected: {processed_doc.tokenizer}")
                 print(f"🔄 Triggering first-stage token-based grouping (max_tokens={self.file_max_tokens})...")
 
@@ -661,9 +679,33 @@ class DocumentService:
                     processed_doc.groups.extend(new_groups)
                     print(f"✅ Stage-2 created {len(new_groups)} groups; leftovers: {len(leftovers)}")
             else:
-                print(f"⚠️  WARNING: Grouping is enabled but no tokenizer is configured")
-                print(f"⚠️  WARNING: Skipping document grouping - chunks will remain ungrouped")
-                print(f"⚠️  WARNING: To enable grouping, configure a tokenizer in your model settings")
+                # Case 2: No tokenizer - create single group with full document content
+                print(f"ℹ️  No tokenizer configured - creating single full-document group")
+                print(f"📄 Document will be cached as one complete unit (no chunking)")
+
+                # Create a single group containing the full document
+                if processed_doc.chunks:
+                    full_chunk = processed_doc.chunks[0]  # Should be the single full-document chunk
+                    source_file = full_chunk.source_file or "unknown"
+                    group_id = f"{source_file}_full_document"
+
+                    # Set group_id on the chunk
+                    full_chunk.group_id = group_id
+
+                    # Create the group
+                    full_doc_group = MergedGroup(
+                        group_id=group_id,
+                        chunk_ids=[full_chunk.chunk_id],
+                        total_tokens=0,  # No token count available
+                        merged_content=full_chunk.content
+                    )
+
+                    processed_doc.groups = [full_doc_group]
+
+                    print(f"✅ Full-document group created:")
+                    print(f"   - Group ID: {group_id}")
+                    print(f"   - Content length: {len(full_chunk.content):,} characters")
+                    print(f"   - Total pages: {processed_doc.total_pages}")
 
         return processed_doc
 

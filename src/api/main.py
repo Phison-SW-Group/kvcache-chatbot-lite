@@ -73,13 +73,14 @@ async def lifespan(app: FastAPI):
     if first_model.completion_params.custom_params:
         completion_params_dict.update(first_model.completion_params.custom_params)
 
-    # Configure LLM service with first model
-    configure_llm_service(
+    # Configure LLM service with first model (use reconfigure to avoid creating new instance)
+    llm_service.reconfigure(
         model=first_model.serving_name,
         api_key=first_model.api_key,
         base_url=first_model.base_url,
         **completion_params_dict
     )
+    print(f"🔧 LLM service instance ID: {id(llm_service)}")
 
     print(f"✅ LLM service initialized")
     print(f"   Model: {first_model.serving_name}")

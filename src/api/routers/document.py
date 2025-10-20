@@ -2,9 +2,9 @@
 Independent document router
 Documents are managed separately from sessions
 """
-from fastapi import APIRouter, UploadFile, File, HTTPException
+from fastapi import APIRouter, UploadFile, File, HTTPException, Form
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 import os
 import aiofiles
 
@@ -98,12 +98,65 @@ os.makedirs(settings.documents.upload_dir, exist_ok=True)
 
 
 @router.post("/upload", response_model=DocumentUploadResponse)
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+    file: UploadFile = File(...),
+    model_name: Optional[str] = Form(None)
+):
     """
-    Upload a PDF document (independent of any session)
+    Upload a PDF document with model-specific processing
     Currently supports: .pdf
-    The document will be automatically chunked for efficient processing
+    The document will be automatically chunked based on the specified model's tokenizer
+    Different models will have different processing results stored separately
+
+    Args:
+        file: PDF file to upload
+        model_name: Model name to use for processing (if not provided, uses current llm_service model)
     """
+    # Get model name - prefer explicit parameter, fallback to llm_service
+    from services.llm_service import llm_service
+    from services.tokenizer_manager import tokenizer_manager
+
+    # DEBUG: Print received model_name
+    print(f"🔍 DEBUG: Received model_name parameter: {repr(model_name)}")
+
+    if model_name:
+        current_model_name = model_name
+        print(f"📤 Upload with explicit model parameter: {model_name}")
+
+        # Switch llm_service and tokenizer to this model
+        selected_model = settings.get_model_by_serving_name(model_name)
+        if not selected_model:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{model_name}' not found in configuration"
+            )
+
+        # Reconfigure LLM service
+        completion_params_dict = selected_model.completion_params.model_dump(exclude={'custom_params'})
+        if selected_model.completion_params.custom_params:
+            completion_params_dict.update(selected_model.completion_params.custom_params)
+
+        llm_service.reconfigure(
+            model=selected_model.serving_name,
+            api_key=selected_model.api_key,
+            base_url=selected_model.base_url,
+            **completion_params_dict
+        )
+
+        # Load tokenizer for this model
+        tokenizer_manager.load_tokenizer(model_name)
+    else:
+        # Fallback to current llm_service model
+        current_config = llm_service.get_current_config()
+        current_model_name = current_config.get("model")
+        print(f"📤 Upload using llm_service model: {current_model_name}")
+
+    if not current_model_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No model specified. Please provide model_name parameter or select a model first."
+        )
+
     # Validate file extension
     file_extension = Path(file.filename).suffix.lower()
 
@@ -124,14 +177,27 @@ async def upload_document(file: UploadFile = File(...)):
             detail=f"File too large. Maximum size: {settings.documents.max_file_size / (1024*1024):.1f}MB"
         )
 
-    # Generate unique filename
-    import uuid
-    unique_id = str(uuid.uuid4())[:8]
-    safe_filename = f"{unique_id}_{file.filename}"
-    file_path = Path(settings.documents.upload_dir) / safe_filename
+    # Generate consistent doc_id based on filename
+    import hashlib
+
+    # Create a consistent doc_id based on filename (same file = same doc_id)
+    file_hash = hashlib.md5(file.filename.encode()).hexdigest()[:12]
+    doc_id = file_hash
+
+    # Use model-specific directory structure
+    # Sanitize model name for filesystem
+    safe_model_name = current_model_name.replace('/', '_').replace('\\', '_')
+    model_dir = Path(settings.documents.upload_dir) / safe_model_name
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save file in model directory with doc_id prefix: {doc_id}_{filename}
+    file_path = model_dir / f"{doc_id}_{file.filename}"
+
+    print(f"📁 Model directory: {safe_model_name}/")
+    print(f"📄 File will be saved as: {doc_id}_{file.filename}")
 
     try:
-        # Save file
+        # Save file (overwrite if exists)
         async with aiofiles.open(file_path, 'wb') as f:
             await f.write(file_content)
 
@@ -145,32 +211,34 @@ async def upload_document(file: UploadFile = File(...)):
             for chunk in processed_doc.chunks
         ]
 
-        # Store in document manager
-        doc_id = document_manager.add_document(
+        # Store in document manager with model name
+        final_doc_id = document_manager.add_document(
             filename=file.filename,
             file_size=file_size,
             file_path=file_path,
+            model_name=current_model_name,  # NEW: Model-specific processing
             full_text=processed_doc.full_text,
             chunks=chunks,
             total_pages=processed_doc.total_pages,
-            tokenizer=processed_doc.tokenizer
+            tokenizer=processed_doc.tokenizer,
+            doc_id=doc_id  # Use the generated unique doc_id
         )
 
         # Store groups if available
         if processed_doc.groups:
-            doc = document_manager.get_document(doc_id)
+            doc = document_manager.get_document(final_doc_id, current_model_name)
             if doc:
                 for group in processed_doc.groups:
                     doc.add_group(group.to_dict())
-                document_manager._save_document_metadata(doc_id)  # Persist groups
+                document_manager._save_document_metadata(current_model_name, final_doc_id)  # Persist groups (note order!)
 
         return DocumentUploadResponse(
-            doc_id=doc_id,
+            doc_id=final_doc_id,
             filename=file.filename,
             file_size=file_size,
             total_pages=processed_doc.total_pages,
             total_chunks=processed_doc.total_chunks,
-            message=f"Document '{file.filename}' uploaded successfully with {processed_doc.total_chunks} chunks"
+            message=f"Document '{file.filename}' processed successfully with model '{current_model_name}' ({processed_doc.total_chunks} chunks)"
         )
 
     except ValueError as e:
@@ -185,27 +253,65 @@ async def upload_document(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
 
-@router.get("/list", response_model=List[DocumentInfo])
+@router.get("/list")
 async def list_documents():
-    """Get list of all uploaded documents"""
-    documents = document_manager.list_documents()
+    """
+    Get list of uploaded documents for the CURRENT MODEL only
+    Each model has its own independent document list
+    """
+    # Get current model
+    from services.llm_service import llm_service
+    current_config = llm_service.get_current_config()
+    current_model_name = current_config.get("model")
+
+    print(f"📋 list_documents called - current model: {current_model_name}")
+
+    if not current_model_name:
+        print("⚠️  No model selected, returning empty list")
+        return []  # No model selected, return empty list
+
+    # Return only documents for this model
+    documents = document_manager.list_documents(model_name=current_model_name)
+
+    print(f"📋 Returning {len(documents)} document(s) for model '{current_model_name}'")
+    for doc in documents:
+        print(f"   - {doc['filename']} (doc_id: {doc['doc_id']})")
+
     return documents
 
 
 @router.get("/{doc_id}")
 async def get_document_info(doc_id: str, include_preview: bool = True, include_chunks: bool = False):
     """
-    Get information about a specific document
+    Get information about a specific document for the current model
 
     Args:
         doc_id: Document ID
         include_preview: Whether to include content preview (default: True)
         include_chunks: Whether to include chunk information (default: False)
     """
-    doc = document_manager.get_document(doc_id)
+    # Get current model
+    from services.llm_service import llm_service
+    current_config = llm_service.get_current_config()
+    current_model_name = current_config.get("model")
+
+    if not current_model_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No model selected"
+        )
+
+    doc = document_manager.get_document(doc_id, current_model_name)
 
     if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+        available_models = document_manager.get_available_models(doc_id)
+        if available_models:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not processed with current model '{current_model_name}'. Available models: {', '.join(available_models)}"
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Document not found")
 
     return doc.to_dict(include_preview=include_preview, include_chunks=include_chunks)
 
@@ -213,7 +319,7 @@ async def get_document_info(doc_id: str, include_preview: bool = True, include_c
 @router.get("/{doc_id}/chunks")
 async def get_document_chunks(doc_id: str):
     """
-    Get all chunks for a specific document
+    Get all chunks for a specific document (current model)
 
     Args:
         doc_id: Document ID
@@ -221,13 +327,25 @@ async def get_document_chunks(doc_id: str):
     Returns:
         List of chunks with metadata
     """
-    chunks = document_manager.get_document_chunks(doc_id)
+    # Get current model
+    from services.llm_service import llm_service
+    current_config = llm_service.get_current_config()
+    current_model_name = current_config.get("model")
+
+    if not current_model_name:
+        raise HTTPException(status_code=400, detail="No model selected")
+
+    chunks = document_manager.get_document_chunks(doc_id, current_model_name)
 
     if chunks is None:
-        raise HTTPException(status_code=404, detail="Document not found")
+        raise HTTPException(
+            status_code=404,
+            detail=f"Document not found for model '{current_model_name}'"
+        )
 
     return {
         "doc_id": doc_id,
+        "model_name": current_model_name,
         "total_chunks": len(chunks),
         "chunks": [chunk.to_dict(include_content=False) for chunk in chunks]
     }
@@ -236,7 +354,7 @@ async def get_document_chunks(doc_id: str):
 @router.get("/{doc_id}/chunks/{chunk_id}")
 async def get_document_chunk(doc_id: str, chunk_id: int):
     """
-    Get a specific chunk from a document
+    Get a specific chunk from a document (current model)
 
     Args:
         doc_id: Document ID
@@ -245,35 +363,54 @@ async def get_document_chunk(doc_id: str, chunk_id: int):
     Returns:
         Chunk content and metadata
     """
-    chunk = document_manager.get_document_chunk(doc_id, chunk_id)
+    # Get current model
+    from services.llm_service import llm_service
+    current_config = llm_service.get_current_config()
+    current_model_name = current_config.get("model")
+
+    if not current_model_name:
+        raise HTTPException(status_code=400, detail="No model selected")
+
+    chunk = document_manager.get_document_chunk(doc_id, current_model_name, chunk_id)
 
     if chunk is None:
         raise HTTPException(status_code=404, detail="Document or chunk not found")
 
     return {
         "doc_id": doc_id,
+        "model_name": current_model_name,
         "chunk": chunk.to_dict(include_content=True)
     }
 
 
 @router.delete("/{doc_id}")
-async def delete_document(doc_id: str):
-    """Delete a document"""
-    success = document_manager.delete_document(doc_id)
+async def delete_document(doc_id: str, model_name: Optional[str] = None):
+    """
+    Delete a document (optionally for specific model only)
+
+    Args:
+        doc_id: Document ID
+        model_name: Optional model name. If provided, only delete that model's metadata.
+                   If not provided, delete all model metadata for this document.
+    """
+    success = document_manager.delete_document(doc_id, model_name)
 
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
 
-    return {"message": "Document deleted successfully"}
+    if model_name:
+        return {"message": f"Document metadata deleted for model '{model_name}'"}
+    else:
+        return {"message": "Document deleted successfully (all models)"}
 
 
 @router.post("/cache/{doc_id}")
 async def cache_document(doc_id: str):
     """
-    Cache an already uploaded document in KV Cache by groups
+    Cache an already uploaded document in KV Cache by groups (for current model)
 
     This endpoint performs caching for an existing document by processing each group separately:
-    1. Retrieve document from document manager
+    1. Retrieve document from document manager (for current model)
     2. Get all groups from the document
     3. Run inference for each group individually (max_tokens=2)
        - For local models: This populates the KV Cache in memory for each group
@@ -290,17 +427,33 @@ async def cache_document(doc_id: str):
 
     current_config = llm_service.get_current_config()
     current_model_name = current_config.get("model")
+
+    if not current_model_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No model selected. Please select a model first."
+        )
+
     current_model = settings.get_model_by_serving_name(current_model_name) if current_model_name else None
 
     is_remote = current_model and current_model.model_type == "remote"
 
-    # Get document from document manager
-    document = document_manager.get_document(doc_id)
+    # Get document from document manager (for current model)
+    document = document_manager.get_document(doc_id, current_model_name)
     if not document:
-        raise HTTPException(
-            status_code=404,
-            detail=f"Document with ID '{doc_id}' not found"
-        )
+        available_models = document_manager.get_available_models(doc_id)
+        if available_models:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document with ID '{doc_id}' not processed with model '{current_model_name}'. "
+                       f"Available models: {', '.join(available_models)}. "
+                       f"Please upload the document with this model first."
+            )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document with ID '{doc_id}' not found"
+            )
 
     # Get all groups from the document
     groups = document.get_groups()
@@ -403,16 +556,34 @@ async def cache_document(doc_id: str):
 @router.get("/{doc_id}/groups", response_model=List[GroupInfo])
 async def get_document_groups(doc_id: str):
     """
-    Get all groups for a document
+    Get all groups for a document (for current model)
 
     Returns list of groups with metadata (without full content)
     """
-    document = document_manager.get_document(doc_id)
-    if not document:
+    # Get current model
+    from services.llm_service import llm_service
+    current_config = llm_service.get_current_config()
+    current_model_name = current_config.get("model")
+
+    if not current_model_name:
         raise HTTPException(
-            status_code=404,
-            detail=f"Document with ID '{doc_id}' not found"
+            status_code=400,
+            detail="No model selected"
         )
+
+    document = document_manager.get_document(doc_id, current_model_name)
+    if not document:
+        available_models = document_manager.get_available_models(doc_id)
+        if available_models:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not processed with model '{current_model_name}'. Available: {', '.join(available_models)}"
+            )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document with ID '{doc_id}' not found"
+            )
 
     groups = document.get_groups()
     if not groups:

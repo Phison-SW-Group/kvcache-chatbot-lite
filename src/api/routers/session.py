@@ -29,8 +29,20 @@ def _prepare_document_context(request: MessageRequest):
     if not request.document_id:
         return None, None
 
-    doc = document_manager.get_document(request.document_id)
+    # Get current model name from request or llm_service
+    model_name = request.serving_name
+    if not model_name:
+        # Fallback to llm_service current model
+        current_config = llm_service.get_current_config()
+        model_name = current_config.get("model")
+
+    if not model_name:
+        print("⚠️ WARNING: No model specified for document retrieval, skipping document context")
+        return None, None
+
+    doc = document_manager.get_document(request.document_id, model_name)
     if not doc:
+        print(f"⚠️ WARNING: Document {request.document_id} not found for model {model_name}")
         return None, None
 
     # Use RAG retrieval if enabled and groups are available

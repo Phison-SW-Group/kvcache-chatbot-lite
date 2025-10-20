@@ -209,8 +209,8 @@ async def start_model_with_reset(request: ModelUpRequest):
         tokenizer_result = tokenizer_manager.load_tokenizer(request.serving_name)
         print(f"🔧 Tokenizer: {tokenizer_result['message']}")
 
-        # Clear all documents when model is reset
-        cleared_count = document_manager.clear_all_documents()
+        # Clear only this model's documents when model is reset
+        cleared_count = document_manager.clear_model_documents(request.serving_name)
 
         # Start model server with reset
         result = model_server.up(reset=True, serving_name=request.serving_name)
@@ -218,7 +218,7 @@ async def start_model_with_reset(request: ModelUpRequest):
         # Update message to include document clearing info
         model_message = result["message"]
         if cleared_count > 0:
-            model_message += f" (Cleared {cleared_count} document(s) due to model reset)"
+            model_message += f" (Cleared {cleared_count} metadata file(s) for model '{request.serving_name}')"
 
         # Format model and tokenizer status separately
         tokenizer_message = ""

@@ -47,13 +47,18 @@ class ChatbotClient:
         self.session_id = str(uuid.uuid4())
         self.client = httpx.Client(timeout=30.0)
 
-    def upload_document(self, file_path: str) -> dict:
-        """Upload a document (independent of session)"""
+    def upload_document(self, file_path: str, model_name: Optional[str] = None) -> dict:
+        """Upload a document (independent of session) with specified model"""
+        print(f"🔍 CLIENT DEBUG: Uploading with model_name={repr(model_name)}")  # DEBUG
         with open(file_path, 'rb') as f:
             files = {'file': f}
+            # Add model_name as form data if provided
+            data = {'model_name': model_name} if model_name else {}
+            print(f"🔍 CLIENT DEBUG: Form data={data}")  # DEBUG
             response = self.client.post(
                 f"{self.api_base_url}/documents/upload",
-                files=files
+                files=files,
+                data=data  # Pass model_name as form data
             )
             response.raise_for_status()
             return response.json()
@@ -215,6 +220,16 @@ class ChatbotClient:
         response.raise_for_status()
         return response.json()
 
+    def switch_model(self, serving_name: str) -> dict:
+        """Switch to a different model (updates backend configuration)"""
+        payload = {"serving_name": serving_name}
+        response = self.client.post(
+            f"{self.api_base_url}/model/switch",
+            json=payload
+        )
+        response.raise_for_status()
+        return response.json()
+
     def get_model_status(self) -> dict:
         """Get current model status"""
         response = self.client.get(f"{self.api_base_url}/model/status")
@@ -370,17 +385,25 @@ class ChatbotWeb:
         return ""
 
     def get_document_choices(self) -> List[Tuple[str, str]]:
-        """Get list of documents for dropdown"""
+        """Get list of documents for dropdown (model-specific)"""
         try:
+            print(f"   📡 Calling backend /documents/list API...")
             docs = self.client.list_documents()
+            print(f"   📡 Backend returned: {docs}")
+            print(f"   🔍 Frontend: Got {len(docs)} document(s) from backend")
             if not docs:
-                return [("No documents uploaded", "None")]
+                print(f"   ℹ️  No documents for this model")
+                return [("No documents uploaded for this model", "None")]
             choices = [("No document selected", "None")]
             for doc in docs:
+                print(f"      - {doc['filename']} (doc_id: {doc['doc_id']}, model: {doc.get('model_name', 'unknown')})")
                 choices.append((doc['filename'], doc['doc_id']))
+            print(f"   ✅ Final choices: {choices}")
             return choices
         except Exception as e:
-            print(f"Error fetching documents: {e}")
+            import traceback
+            print(f"   ❌ Error fetching documents: {e}")
+            print(traceback.format_exc())
             return [("Error loading documents", "None")]
 
     def get_model_choices(self) -> List[Tuple[str, str]]:
@@ -399,18 +422,25 @@ class ChatbotWeb:
             return [("Error loading models", "None")]
 
 
-    def upload_file(self, files) -> Tuple[str, gr.Dropdown, List[str]]:
+    def upload_file(self, files, selected_model: Optional[str] = None) -> Tuple[str, gr.Dropdown, List[str]]:
         """
         Handle multiple file uploads
 
         Args:
             files: List of uploaded file objects
+            selected_model: Selected model serving name
 
         Returns:
             Status message, updated dropdown, and list of uploaded document IDs
         """
         if files is None or len(files) == 0:
             return "Please select at least one file to upload", gr.Dropdown(choices=self.get_document_choices()), []
+
+        # Check if model is selected
+        if not selected_model or selected_model == "None":
+            return "❌ Please select a model before uploading documents", gr.Dropdown(choices=self.get_document_choices()), []
+
+        print(f"📤 Uploading with model: {selected_model}")  # Debug log
 
         success_results = []
         failed_results = []
@@ -419,11 +449,13 @@ class ChatbotWeb:
         # Process each file
         for file in files:
             try:
-                result = self.client.upload_document(file.name)
+                # Pass model_name directly to upload API
+                result = self.client.upload_document(file.name, model_name=selected_model)
                 success_results.append({
                     'filename': result['filename'],
                     'size': result['file_size'],
-                    'doc_id': result['doc_id']
+                    'doc_id': result['doc_id'],
+                    'model': selected_model  # Track which model was used
                 })
                 uploaded_doc_ids.append(result['doc_id'])
             except httpx.HTTPStatusError as e:
@@ -448,7 +480,7 @@ class ChatbotWeb:
         msg = ""
 
         if success_results:
-            msg += f"✅ Successfully uploaded {len(success_results)} file(s):\n"
+            msg += f"✅ Successfully uploaded {len(success_results)} file(s) with model '{selected_model}':\n"
             for res in success_results:
                 msg += f"  • {res['filename']} ({res['size']} bytes)\n"
 
@@ -867,6 +899,46 @@ class ChatbotWeb:
             error_msg = f"❌ Failed to stop model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
             return error_msg, ""
 
+    def on_model_change(self, selected_model: str) -> tuple:
+        """
+        Handle model dropdown change - switch backend configuration and refresh document list
+
+        Args:
+            selected_model: Selected model serving name
+
+        Returns:
+            Tuple of (status_message, updated_document_dropdown)
+        """
+        print(f"\n{'='*60}")
+        print(f"🔄 on_model_change called with: {selected_model}")
+
+        if not selected_model or selected_model == "None":
+            print("⚠️  No model selected")
+            return "Please select a model", gr.update(choices=[("No documents", "None")])
+
+        try:
+            # Switch backend model
+            print(f"📡 Calling backend switch_model API...")
+            result = self.client.switch_model(selected_model)
+            print(f"✅ Backend switched: {result}")
+            message = result.get('message', f'Switched to {selected_model}')
+
+            # Small delay to ensure backend is ready
+            import time
+            time.sleep(0.1)
+
+            # Refresh document list for this model (MUST use gr.update!)
+            print(f"📋 Fetching documents for {selected_model}...")
+            new_choices = self.get_document_choices()
+            print(f"📋 Got {len(new_choices)} choice(s): {new_choices}")
+            print(f"{'='*60}\n")
+
+            return f"✅ {message}", gr.update(choices=new_choices, value="None")
+        except Exception as e:
+            import traceback
+            print(f"❌ Error in on_model_change:")
+            print(traceback.format_exc())
+            return f"⚠️ Model selection updated (backend switch failed: {str(e)})", gr.update(choices=[("Error", "None")])
 
     def create_web(self):
         # Create Gradio interface with simplified layout
@@ -988,7 +1060,7 @@ class ChatbotWeb:
             # Upload events
             upload_btn.click(
                 fn=self.upload_file,
-                inputs=[file_upload],
+                inputs=[file_upload, model_dropdown],  # Add model_dropdown parameter
                 outputs=[upload_status, doc_dropdown, last_uploaded_doc_ids]
             )
 
@@ -1050,6 +1122,13 @@ class ChatbotWeb:
                 fn=self.stop_model,
                 inputs=[],
                 outputs=[model_status, deploy_log]
+            )
+
+            # Model dropdown change - switch backend model configuration AND refresh doc list
+            model_dropdown.change(
+                fn=self.on_model_change,
+                inputs=[model_dropdown],
+                outputs=[model_status, doc_dropdown]  # Also update document dropdown!
             )
 
         return demo

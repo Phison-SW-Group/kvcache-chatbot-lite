@@ -40,8 +40,13 @@ class LLMService:
         **completion_params
     ):
         """Reconfigure LLM service (for switching models)"""
+        print(f"🔧 reconfigure() called:")
+        print(f"   - Old model: {self.model}")
+        print(f"   - New model: {model}")
+
         if model is not None:
             self.model = model
+            print(f"   - Updated self.model to: {self.model}")
         if api_key is not None:
             self.api_key = api_key
         if base_url is not None:
@@ -49,8 +54,14 @@ class LLMService:
         if completion_params:
             self.completion_params.update(completion_params)
 
+        print(f"   - Final self.model: {self.model}")
+        print(f"   - Instance ID: {id(self)}")
+
     def get_current_config(self) -> dict:
         """Get current LLM service configuration"""
+        print(f"🔍 get_current_config() called:")
+        print(f"   - self.model: {self.model}")
+        print(f"   - Instance ID: {id(self)}")
         return {
             "model": self.model,
             "base_url": self.base_url,

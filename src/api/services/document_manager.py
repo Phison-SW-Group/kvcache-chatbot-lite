@@ -86,6 +86,7 @@ class DocumentMetadata:
     """
     Metadata for an uploaded document (collection)
     Each document is a collection that may contain multiple chunks
+    Model-specific: Different models can have different chunking strategies
     """
 
     def __init__(
@@ -94,6 +95,7 @@ class DocumentMetadata:
         filename: str,
         file_size: int,
         file_path: Path,
+        model_name: str,  # NEW: Model name for this processing
         total_pages: int = 0,
         uploaded_at: Optional[datetime] = None,
         tokenizer: Optional[str] = None
@@ -102,6 +104,7 @@ class DocumentMetadata:
         self.filename = filename
         self.file_size = file_size
         self.file_path = file_path
+        self.model_name = model_name  # NEW: Which model this metadata belongs to
         self.total_pages = total_pages
         self.uploaded_at = uploaded_at if uploaded_at else datetime.now()
         self.tokenizer = tokenizer  # Tokenizer used for this document
@@ -151,6 +154,7 @@ class DocumentMetadata:
             "doc_id": self.doc_id,
             "filename": self.filename,
             "file_size": self.file_size,
+            "model_name": self.model_name,  # NEW: Include model name
             "total_pages": self.total_pages,
             "total_chunks": len(self.chunks),
             "total_groups": len(self.groups),
@@ -175,6 +179,7 @@ class DocumentMetadata:
             "filename": self.filename,
             "file_size": self.file_size,
             "file_path": str(self.file_path),
+            "model_name": self.model_name,  # NEW: Include model name
             "total_pages": self.total_pages,
             "uploaded_at": self.uploaded_at.isoformat(),
             "tokenizer": self.tokenizer,
@@ -190,6 +195,7 @@ class DocumentMetadata:
             filename=data["filename"],
             file_size=data["file_size"],
             file_path=Path(data["file_path"]),
+            model_name=data.get("model_name", "unknown"),  # NEW: Get model name
             total_pages=data.get("total_pages", 0),
             uploaded_at=datetime.fromisoformat(data["uploaded_at"]),
             tokenizer=data.get("tokenizer")
@@ -211,17 +217,24 @@ class DocumentMetadata:
 class DocumentManager:
     """
     Manages uploaded documents independently from sessions
-    Users can upload documents and select them when chatting
+    Model-specific document processing - each model has its own directory
 
-    Each document's metadata is persisted to its own JSON file.
+    NEW Storage structure:
+    uploads/
+      ├── Meta-Llama-3.1-8B/        # Model directory
+      │   ├── doc_abc123.pdf        # Original file
+      │   ├── doc_abc123_metadata.json
+      │   ├── doc_def456.pdf
+      │   └── doc_def456_metadata.json
+      └── gemini-2.0-flash/         # Another model directory
+          ├── doc_abc123.pdf
+          └── doc_abc123_metadata.json
     """
 
-    INDEX_FILENAME = "documents_index.json"
-
     def __init__(self, upload_dir: str = "uploads"):
-        self._documents: Dict[str, DocumentMetadata] = {}
+        # Store documents by (model_name, doc_id) key (model first for easier filtering)
+        self._documents: Dict[tuple[str, str], DocumentMetadata] = {}
         self.upload_dir = Path(upload_dir)
-        self.index_path = self.upload_dir / self.INDEX_FILENAME
 
         # Ensure upload directory exists
         os.makedirs(upload_dir, exist_ok=True)
@@ -229,84 +242,106 @@ class DocumentManager:
         # Load existing documents metadata
         self._load_all_documents()
 
-    def _get_doc_metadata_path(self, doc_id: str) -> Path:
-        """Get the metadata file path for a specific document"""
-        return self.upload_dir / f"{doc_id}_metadata.json"
+    def _get_model_directory(self, model_name: str) -> Path:
+        """Get the directory for a specific model"""
+        # Sanitize model name for filesystem
+        safe_model_name = model_name.replace('/', '_').replace('\\', '_')
+        return self.upload_dir / safe_model_name
 
-    def _save_document_metadata(self, doc_id: str):
-        """Save metadata for a single document"""
-        if doc_id not in self._documents:
+    def _get_doc_file_path(self, model_name: str, doc_id: str, filename: str) -> Path:
+        """Get the path for the original document file within model directory"""
+        model_dir = self._get_model_directory(model_name)
+        # Store as: {doc_id}_{filename} for uniqueness
+        return model_dir / f"{doc_id}_{filename}"
+
+    def _get_metadata_path(self, model_name: str, doc_id: str) -> Path:
+        """Get the metadata file path for a specific document and model"""
+        model_dir = self._get_model_directory(model_name)
+        return model_dir / f"{doc_id}_metadata.json"
+
+    def _save_document_metadata(self, model_name: str, doc_id: str):
+        """Save metadata for a single document and model"""
+        key = (model_name, doc_id)
+        if key not in self._documents:
             return
 
         try:
-            doc = self._documents[doc_id]
-            metadata_path = self._get_doc_metadata_path(doc_id)
+            doc = self._documents[key]
+            metadata_path = self._get_metadata_path(model_name, doc_id)
+
+            # Ensure model directory exists
+            metadata_path.parent.mkdir(parents=True, exist_ok=True)
 
             with open(metadata_path, 'w', encoding='utf-8') as f:
                 json.dump(doc.to_persistent_dict(), f, indent=2, ensure_ascii=False)
         except Exception as e:
-            print(f"Error saving document metadata for {doc_id}: {e}")
+            print(f"Error saving document metadata for {doc_id} (model: {model_name}): {e}")
 
     def _save_index(self):
-        """Save document index (list of all doc_ids and basic info)"""
-        try:
-            index_data = {
-                doc_id: {
-                    "filename": doc.filename,
-                    "uploaded_at": doc.uploaded_at.isoformat(),
-                    "metadata_file": f"{doc_id}_metadata.json"
-                }
-                for doc_id, doc in self._documents.items()
-            }
-
-            with open(self.index_path, 'w', encoding='utf-8') as f:
-                json.dump(index_data, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            print(f"Error saving document index: {e}")
+        """
+        Save index is no longer needed with new structure
+        Each model directory is self-contained
+        We can scan directories to discover documents
+        """
+        pass  # No longer needed with new structure
 
     def _load_all_documents(self):
-        """Load all documents from their individual metadata files"""
-        if not self.index_path.exists():
-            print("No document index found, starting fresh")
+        """Load all documents by scanning model directories"""
+        if not self.upload_dir.exists():
+            print("Upload directory not found, starting fresh")
             return
 
         try:
-            with open(self.index_path, 'r', encoding='utf-8') as f:
-                index_data = json.load(f)
+            loaded_count = 0
 
-            for doc_id, index_info in index_data.items():
-                try:
-                    metadata_path = self._get_doc_metadata_path(doc_id)
-
-                    if not metadata_path.exists():
-                        print(f"Warning: Metadata file not found for {doc_id}, skipping")
-                        continue
-
-                    with open(metadata_path, 'r', encoding='utf-8') as f:
-                        doc_data = json.load(f)
-
-                    # Recreate DocumentMetadata object
-                    metadata = DocumentMetadata.from_persistent_dict(doc_data)
-
-                    # Check if file still exists
-                    if not metadata.file_path.exists():
-                        print(f"Warning: Document file not found, skipping: {metadata.file_path}")
-                        continue
-
-                    # Reconstruct full_text from chunks (for PDF documents)
-                    if metadata.chunks:
-                        metadata.full_text = "\n\n".join(chunk.content for chunk in metadata.chunks)
-
-                    self._documents[doc_id] = metadata
-
-                except Exception as e:
-                    print(f"Error loading document {doc_id}: {e}")
+            # Scan each subdirectory (each is a model directory)
+            for model_dir in self.upload_dir.iterdir():
+                if not model_dir.is_dir():
                     continue
 
-            print(f"Loaded {len(self._documents)} document(s) from individual metadata files")
+                # Extract model name from directory name
+                model_name = model_dir.name
+                print(f"📂 Scanning model directory: {model_name}")
+
+                # Load all metadata files in this model directory
+                for metadata_file in model_dir.glob("*_metadata.json"):
+                    try:
+                        # Extract doc_id from filename: {doc_id}_metadata.json
+                        doc_id = metadata_file.stem.replace('_metadata', '')
+
+                        print(f"   Loading: {metadata_file.name} (doc_id: {doc_id})")
+
+                        with open(metadata_file, 'r', encoding='utf-8') as f:
+                            doc_data = json.load(f)
+
+                        # Recreate DocumentMetadata object
+                        metadata = DocumentMetadata.from_persistent_dict(doc_data)
+
+                        # Check if file still exists
+                        if not metadata.file_path.exists():
+                            print(f"⚠️  Document file not found: {metadata.file_path}")
+                            continue
+
+                        # Reconstruct full_text from chunks (for PDF documents)
+                        if metadata.chunks:
+                            metadata.full_text = "\n\n".join(chunk.content for chunk in metadata.chunks)
+
+                        # Store with (model_name, doc_id) key (model first!)
+                        self._documents[(model_name, doc_id)] = metadata
+                        print(f"   ✅ Loaded as key: ({model_name}, {doc_id})")
+                        loaded_count += 1
+
+                    except Exception as e:
+                        print(f"Error loading {metadata_file}: {e}")
+                        continue
+
+            print(f"📂 Loaded {loaded_count} document(s) from model directories")
+            print(f"📂 Total documents in memory: {len(self._documents)}")
+            for (model, doc_id), doc in self._documents.items():
+                print(f"   - Model: {model}, DocID: {doc_id}, File: {doc.filename}")
 
         except Exception as e:
-            print(f"Error loading document index: {e}")
+            print(f"Error scanning model directories: {e}")
 
 
     def add_document(
@@ -314,31 +349,40 @@ class DocumentManager:
         filename: str,
         file_size: int,
         file_path: Path,
+        model_name: str,  # NEW: Model name for this processing
         full_text: str,
         chunks: List['ChunkMetadata'],
         total_pages: int = 0,
-        tokenizer: Optional[str] = None
+        tokenizer: Optional[str] = None,
+        doc_id: Optional[str] = None  # NEW: Optional doc_id for re-uploading
     ) -> str:
         """
-        Add a new document collection to the manager
+        Add a new document collection to the manager (model-specific)
 
         Args:
             filename: Original filename
             file_size: Size in bytes
-            file_path: Path where file is stored
+            file_path: Path where file is stored (should be in doc subdirectory)
+            model_name: Model used for processing this document
             full_text: Complete extracted text content
             chunks: List of document chunks
             total_pages: Total number of pages in document
+            tokenizer: Tokenizer used (if any)
+            doc_id: Optional doc_id (reuse if re-uploading same file with different model)
 
         Returns:
             Document ID
         """
-        doc_id = str(uuid.uuid4())
+        # Generate or reuse doc_id
+        if doc_id is None:
+            doc_id = str(uuid.uuid4())
+
         metadata = DocumentMetadata(
             doc_id=doc_id,
             filename=filename,
             file_size=file_size,
             file_path=file_path,
+            model_name=model_name,
             total_pages=total_pages,
             tokenizer=tokenizer
         )
@@ -348,85 +392,196 @@ class DocumentManager:
         for chunk in chunks:
             metadata.add_chunk(chunk)
 
-        self._documents[doc_id] = metadata
+        # Store with (model_name, doc_id) key
+        self._documents[(model_name, doc_id)] = metadata
 
-        # Save document metadata and update index
-        self._save_document_metadata(doc_id)
-        self._save_index()
+        # Save document metadata
+        self._save_document_metadata(model_name, doc_id)
 
         return doc_id
 
-    def get_document(self, doc_id: str) -> Optional[DocumentMetadata]:
-        """Get document metadata by ID"""
-        return self._documents.get(doc_id)
+    def get_document(self, doc_id: str, model_name: str) -> Optional[DocumentMetadata]:
+        """Get document metadata by ID and model name"""
+        return self._documents.get((model_name, doc_id))
 
-    def get_document_content(self, doc_id: str) -> Optional[str]:
-        """Get complete document text content by ID"""
-        doc = self._documents.get(doc_id)
+    def get_document_content(self, doc_id: str, model_name: str) -> Optional[str]:
+        """Get complete document text content by ID and model"""
+        doc = self._documents.get((model_name, doc_id))
         return doc.full_text if doc else None
 
-    def get_document_chunk(self, doc_id: str, chunk_id: int) -> Optional['ChunkMetadata']:
+    def get_document_chunk(self, doc_id: str, model_name: str, chunk_id: int) -> Optional['ChunkMetadata']:
         """Get a specific chunk from a document"""
-        doc = self._documents.get(doc_id)
+        doc = self._documents.get((model_name, doc_id))
         return doc.get_chunk(chunk_id) if doc else None
 
-    def get_document_chunks(self, doc_id: str) -> Optional[List['ChunkMetadata']]:
+    def get_document_chunks(self, doc_id: str, model_name: str) -> Optional[List['ChunkMetadata']]:
         """Get all chunks from a document"""
-        doc = self._documents.get(doc_id)
+        doc = self._documents.get((model_name, doc_id))
         return doc.get_all_chunks() if doc else None
 
-    def list_documents(self) -> List[dict]:
-        """List all uploaded documents"""
-        return [doc.to_dict() for doc in self._documents.values()]
+    def get_available_models(self, doc_id: str) -> List[str]:
+        """Get list of models that have processed this document"""
+        models = []
+        for (model, did), _ in self._documents.items():
+            if did == doc_id:
+                models.append(model)
+        return models
 
-    def delete_document(self, doc_id: str) -> bool:
+    def has_model_metadata(self, doc_id: str, model_name: str) -> bool:
+        """Check if a document has been processed by a specific model"""
+        return (model_name, doc_id) in self._documents
+
+    def list_documents(self, model_name: Optional[str] = None) -> List[dict]:
         """
-        Delete a document
+        List all uploaded documents for a specific model
+
+        Args:
+            model_name: Model name to filter documents (now REQUIRED in practice)
+
+        Returns:
+            List of document info for the specified model
+        """
+        if model_name:
+            # Return only documents for this model
+            docs = []
+            for (model, doc_id), doc in self._documents.items():
+                if model == model_name:
+                    docs.append({
+                        "doc_id": doc_id,
+                        "filename": doc.filename,
+                        "file_size": doc.file_size,
+                        "total_pages": doc.total_pages,
+                        "uploaded_at": doc.uploaded_at.isoformat(),
+                        "model_name": model
+                    })
+            return docs
+        else:
+            # Legacy support: return all documents (grouped by model)
+            docs = []
+            for (model, doc_id), doc in self._documents.items():
+                docs.append({
+                    "doc_id": doc_id,
+                    "filename": doc.filename,
+                    "file_size": doc.file_size,
+                    "total_pages": doc.total_pages,
+                    "uploaded_at": doc.uploaded_at.isoformat(),
+                    "model_name": model
+                })
+            return docs
+
+    def delete_document(self, doc_id: str, model_name: Optional[str] = None) -> bool:
+        """
+        Delete a document (specific model or all models)
 
         Args:
             doc_id: Document ID to delete
+            model_name: Optional model name. If None, delete from all models
 
         Returns:
             True if deleted, False if not found
         """
-        if doc_id in self._documents:
-            doc = self._documents[doc_id]
-            # Only remove from metadata, keep original file
-            del self._documents[doc_id]
+        deleted = False
 
-            # Delete metadata file and update index
-            metadata_path = self._get_doc_metadata_path(doc_id)
-            if metadata_path.exists():
-                metadata_path.unlink()
-            self._save_index()
+        if model_name:
+            # Delete specific model metadata
+            key = (model_name, doc_id)
+            if key in self._documents:
+                doc = self._documents[key]
+                del self._documents[key]
 
-            return True
-        return False
+                # Delete metadata file
+                metadata_path = self._get_metadata_path(model_name, doc_id)
+                if metadata_path.exists():
+                    metadata_path.unlink()
+                    print(f"🗑️  Deleted: {metadata_path}")
+
+                # Delete document file
+                if doc.file_path.exists():
+                    doc.file_path.unlink()
+                    print(f"🗑️  Deleted: {doc.file_path}")
+
+                deleted = True
+        else:
+            # Delete all model metadata for this document
+            to_delete = [(model, did) for (model, did) in self._documents.keys() if did == doc_id]
+
+            for key in to_delete:
+                model_name_val, doc_id_val = key
+                doc = self._documents[key]
+                del self._documents[key]
+
+                # Delete metadata file
+                metadata_path = self._get_metadata_path(model_name_val, doc_id_val)
+                if metadata_path.exists():
+                    metadata_path.unlink()
+
+                # Delete document file
+                if doc.file_path.exists():
+                    doc.file_path.unlink()
+
+                deleted = True
+
+        return deleted
 
     def clear_all_documents(self) -> int:
         """
-        Clear all documents (used when model is reset)
+        Clear all documents from all models
 
         Returns:
-            Number of documents cleared
+            Number of document-model pairs cleared
         """
         count = len(self._documents)
 
-        # Delete all files and metadata files
-        for doc_id, doc in self._documents.items():
-            if doc.file_path.exists():
-                doc.file_path.unlink()
-
-            # Delete metadata file
-            metadata_path = self._get_doc_metadata_path(doc_id)
-            if metadata_path.exists():
-                metadata_path.unlink()
+        # Delete all model directories
+        for model_dir in self.upload_dir.iterdir():
+            if model_dir.is_dir():
+                # Delete all files in model directory
+                for file in model_dir.iterdir():
+                    if file.is_file():
+                        file.unlink()
+                # Delete model directory
+                model_dir.rmdir()
+                print(f"🗑️  Deleted model directory: {model_dir.name}")
 
         # Clear in-memory documents
         self._documents.clear()
 
-        # Save empty index
-        self._save_index()
+        return count
+
+    def clear_model_documents(self, model_name: str) -> int:
+        """
+        Clear all documents for a specific model (when model is reset)
+        Simply deletes the entire model directory
+
+        Args:
+            model_name: Model serving name to clear documents for
+
+        Returns:
+            Number of documents cleared
+        """
+        model_dir = self._get_model_directory(model_name)
+
+        if not model_dir.exists():
+            print(f"📂 Model directory does not exist: {model_dir}")
+            return 0
+
+        # Count documents before deleting
+        count = sum(1 for (model, _) in self._documents.keys() if model == model_name)
+
+        # Delete all files in model directory
+        for file in model_dir.iterdir():
+            if file.is_file():
+                file.unlink()
+                print(f"🗑️  Deleted: {file.name}")
+
+        # Delete model directory
+        model_dir.rmdir()
+        print(f"🗑️  Deleted model directory: {model_dir.name}")
+
+        # Remove from in-memory storage
+        to_delete = [(model, doc_id) for (model, doc_id) in self._documents.keys() if model == model_name]
+        for key in to_delete:
+            del self._documents[key]
 
         return count
 
