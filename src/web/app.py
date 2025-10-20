@@ -389,7 +389,7 @@ class ChatbotWeb:
             models = self.client.list_models()
             if not models:
                 return [("No models configured", "None")]
-            choices = [("Select a model", "None")]
+            choices = []
             for model in models:
                 # Display serving_name, use serving_name as value
                 choices.append((model['serving_name'], model['serving_name']))
@@ -638,7 +638,12 @@ class ChatbotWeb:
     def on_page_load(self) -> Tuple[List, str, gr.Dropdown, List, gr.Dropdown]:
         """Handle page load/refresh - create new session and refresh document and model lists"""
         self.client.reset_session()
-        return [], "", gr.Dropdown(choices=self.get_document_choices(), value="None"), [], gr.Dropdown(choices=self.get_model_choices(), value="None")
+
+        # Get model choices and set first model as default
+        model_choices = self.get_model_choices()
+        default_model = model_choices[0][1] if model_choices and model_choices[0][1] != "None" else "None"
+
+        return [], "", gr.Dropdown(choices=self.get_document_choices(), value="None"), [], gr.Dropdown(choices=model_choices, value=default_model)
 
 
     def fetch_model_logs(self) -> str:
@@ -938,8 +943,8 @@ class ChatbotWeb:
 
                     # Model selector
                     model_dropdown = gr.Dropdown(
-                        choices=[("Select a model", "None")],
-                        value="None",
+                        choices=[],
+                        value=None,
                         label="",
                         show_label=False,
                         interactive=True
