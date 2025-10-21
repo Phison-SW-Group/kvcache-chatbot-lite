@@ -459,11 +459,11 @@ class ChatbotWeb:
             Status message, updated dropdown, and list of uploaded document IDs
         """
         if files is None or len(files) == 0:
-            return "Please select at least one file to upload", gr.Dropdown(choices=self.get_document_choices()), []
+            return "Please select at least one file to upload", gr.Dropdown(choices=self.get_document_choices(), value="None"), []
 
         # Check if model is selected
         if not selected_model or selected_model == "None":
-            return "❌ Please select a model before uploading documents", gr.Dropdown(choices=self.get_document_choices()), []
+            return "❌ Please select a model before uploading documents", gr.Dropdown(choices=self.get_document_choices(), value="None"), []
 
         print(f"📤 Uploading with model: {selected_model}")  # Debug log
 
@@ -517,8 +517,10 @@ class ChatbotWeb:
         if not success_results and not failed_results:
             msg = "No files were processed"
 
-        # Refresh dropdown choices and return all uploaded doc_ids
-        return msg, gr.Dropdown(choices=self.get_document_choices()), uploaded_doc_ids
+        # Refresh dropdown choices and auto-select the first uploaded document
+        new_choices = self.get_document_choices()
+        default_value = uploaded_doc_ids[0] if uploaded_doc_ids else "None"
+        return msg, gr.Dropdown(choices=new_choices, value=default_value), uploaded_doc_ids
 
     def cache_selected_document(self, last_uploaded_doc_ids: Optional[List[str]], selected_doc: Optional[str]) -> Generator[Tuple[str, str], None, None]:
         """
@@ -999,9 +1001,20 @@ class ChatbotWeb:
             print(f"📋 Fetching documents for {selected_model}...")
             new_choices = self.get_document_choices()
             print(f"📋 Got {len(new_choices)} choice(s): {new_choices}")
+            
+            # Auto-select the first available document (skip "No document selected" option)
+            default_value = "None"
+            if len(new_choices) > 1:  # More than just the "No document selected" option
+                # Find the first real document (not "None")
+                for choice_text, choice_value in new_choices:
+                    if choice_value != "None":
+                        default_value = choice_value
+                        print(f"📋 Auto-selecting first document: {choice_text} ({choice_value})")
+                        break
+            
             print(f"{'='*60}\n")
 
-            return f"✅ {message}", gr.update(choices=new_choices, value="None")
+            return f"✅ {message}", gr.update(choices=new_choices, value=default_value)
         except Exception as e:
             import traceback
             print(f"❌ Error in on_model_change:")
