@@ -164,7 +164,8 @@ async def start_model_without_reset(request: ModelUpRequest):
 async def start_model_with_reset(request: ModelUpRequest):
     """
     Start model with reset (restart with new configuration)
-    This will also clear all uploaded documents since KV cache is reset
+    This will reset cache status for all uploaded documents (files remain, cache flags reset)
+    Users need to re-cache documents after reset to populate KV cache
     Also loads tokenizer for the selected model
     Only works for local models - remote models don't need to be started
     """
@@ -209,16 +210,16 @@ async def start_model_with_reset(request: ModelUpRequest):
         tokenizer_result = tokenizer_manager.load_tokenizer(request.serving_name)
         print(f"🔧 Tokenizer: {tokenizer_result['message']}")
 
-        # Clear only this model's documents when model is reset
-        cleared_count = document_manager.clear_model_documents(request.serving_name)
+        # Reset cache status for this model's documents (without deleting files)
+        reset_count = document_manager.reset_model_cache_status(request.serving_name)
 
         # Start model server with reset
         result = model_server.up(reset=True, serving_name=request.serving_name)
 
-        # Update message to include document clearing info
+        # Update message to include cache reset info
         model_message = result["message"]
-        if cleared_count > 0:
-            model_message += f" (Cleared {cleared_count} metadata file(s) for model '{request.serving_name}')"
+        if reset_count > 0:
+            model_message += f" (Reset cache status for {reset_count} document(s) - please re-cache them)"
 
         # Format model and tokenizer status separately
         tokenizer_message = ""

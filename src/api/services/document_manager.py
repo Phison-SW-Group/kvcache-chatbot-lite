@@ -688,6 +688,44 @@ class DocumentManager:
 
         return count
 
+    def reset_model_cache_status(self, model_name: str) -> int:
+        """
+        Reset cache status for all documents of a specific model without deleting files
+        This is useful when model is restarted with reset - KV cache is cleared but documents remain
+
+        Args:
+            model_name: Model serving name to reset cache status for
+
+        Returns:
+            Number of documents whose cache status was reset
+        """
+        count = 0
+
+        # Reset cache status for all documents of this model
+        for (model, doc_id), doc in self._documents.items():
+            if model == model_name:
+                # Reset document-level cache status
+                doc.cached = False
+                doc.last_cached_at = None
+
+                # Reset all groups' cache status
+                for group in doc.groups:
+                    group['cached'] = False
+                    group['cached_at'] = None
+
+                # Save updated metadata to disk
+                self._save_document_metadata(model_name, doc_id)
+
+                count += 1
+                print(f"🔄 Reset cache status for: {doc.filename} (doc_id: {doc_id})")
+
+        if count > 0:
+            print(f"✅ Reset cache status for {count} document(s) in model '{model_name}'")
+        else:
+            print(f"ℹ️  No documents found for model '{model_name}' to reset cache status")
+
+        return count
+
 
 # Global document manager instance
 document_manager = DocumentManager(upload_dir=settings.documents.upload_dir)
