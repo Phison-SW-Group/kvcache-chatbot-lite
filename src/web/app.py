@@ -63,22 +63,47 @@ class ChatbotClient:
             response.raise_for_status()
             return response.json()
 
-    def cache_document(self, doc_id: str) -> dict:
+    def cache_document(self, doc_id: str):
         """
         Cache an already uploaded document in KV Cache
+        Returns a generator that yields SSE events with progress updates
 
         This function triggers KV Cache pre-warming for an existing document:
         1. Retrieve document content from document manager
         2. Run inference with document as system message (max_tokens=2)
 
         This enables prefix matching acceleration for subsequent queries.
+
+        Yields:
+            dict: SSE event data containing progress updates
         """
-        response = self.client.post(
+        with self.client.stream(
+            "POST",
             f"{self.api_base_url}/documents/cache/{doc_id}",
             timeout=300.0  # 5 minutes for caching operation (large documents may need more time)
-        )
-        response.raise_for_status()
-        return response.json()
+        ) as response:
+            response.raise_for_status()
+
+            # Parse SSE stream
+            event_type = None
+            for line in response.iter_lines():
+                if not line:
+                    continue
+
+                line = line.strip()
+
+                # Parse SSE format: event: xxx \n data: xxx \n\n
+                if line.startswith("event:"):
+                    event_type = line[6:].strip()
+                elif line.startswith("data:"):
+                    if event_type:
+                        data_str = line[5:].strip()
+                        try:
+                            data = json.loads(data_str)
+                            yield {"event": event_type, "data": data}
+                            event_type = None  # Reset for next event
+                        except json.JSONDecodeError:
+                            continue
 
 
     def list_documents(self) -> list:
@@ -495,17 +520,17 @@ class ChatbotWeb:
         # Refresh dropdown choices and return all uploaded doc_ids
         return msg, gr.Dropdown(choices=self.get_document_choices()), uploaded_doc_ids
 
-    def cache_selected_document(self, last_uploaded_doc_ids: Optional[List[str]], selected_doc: Optional[str]) -> Tuple[str, str]:
+    def cache_selected_document(self, last_uploaded_doc_ids: Optional[List[str]], selected_doc: Optional[str]) -> Generator[Tuple[str, str], None, None]:
         """
-        Cache documents in KV Cache (supports multiple documents)
+        Cache documents in KV Cache with real-time progress updates (supports multiple documents)
         Priority: last uploaded documents > dropdown selected document
 
         Args:
             last_uploaded_doc_ids: List of IDs from the most recently uploaded documents
             selected_doc: Selected document ID from dropdown
 
-        Returns:
-            Status message and model logs
+        Yields:
+            Tuple[str, str]: Status message and model logs for each progress update
         """
         # Determine which documents to cache
         doc_ids_to_cache = []
@@ -517,27 +542,122 @@ class ChatbotWeb:
             doc_ids_to_cache = [selected_doc]
 
         if not doc_ids_to_cache:
-            return "Please upload documents first or select one from the dropdown", ""
+            yield "Please upload documents first or select one from the dropdown", ""
+            return
 
-        # Process each document
-        success_results = []
-        failed_results = []
-
+        # Process each document with real-time progress
         for doc_id in doc_ids_to_cache:
             try:
-                # Get initial logs before starting cache
-                initial_logs = self.fetch_model_logs()
+                # State tracking for this document
+                group_states = {}  # {group_id: status}
+                filename = None
+                file_size = None
+                total_groups = 0
+                cached_count = 0
+                failed_groups_detail = []
 
-                # Start cache operation with progress tracking
-                result = self.client.cache_document(doc_id)
-                success_results.append({
-                    'filename': result['filename'],
-                    'size': result['file_size'],
-                    'doc_id': doc_id,
-                    'cached_groups': result.get('cached_groups', 0),
-                    'total_groups': result.get('total_groups', 0),
-                    'failed_groups': result.get('failed_groups', [])
-                })
+                # Process SSE stream
+                for event in self.client.cache_document(doc_id):
+                    event_type = event.get("event")
+                    data = event.get("data", {})
+
+                    if event_type == "error":
+                        # Error occurred
+                        error_msg = data.get("error", "Unknown error")
+                        yield f"❌ Error: {error_msg}", self.fetch_model_logs()
+                        return
+
+                    elif event_type == "init":
+                        # Initial setup - document info and all groups in pending state
+                        filename = data.get("filename")
+                        file_size = data.get("file_size")
+                        total_groups = data.get("total_groups", 0)
+                        groups = data.get("groups", [])
+
+                        # Initialize group states
+                        for group in groups:
+                            group_id = group.get("group_id")
+                            group_states[group_id] = "pending"
+
+                        # Build initial status message
+                        msg = f"✅ Caching document:\n"
+                        msg += f"  • {filename} ({file_size:,} bytes)\n"
+                        for group_id, status in group_states.items():
+                            if status == "pending":
+                                msg += f"    - {group_id}: pending\n"
+                        msg += f"\n📊 Groups: 0/{total_groups} cached"
+
+                        yield msg, self.fetch_model_logs()
+
+                    elif event_type == "progress":
+                        # Progress update for a specific group
+                        group_id = data.get("group_id")
+                        status = data.get("status")
+                        cached_count = data.get("cached_count", 0)
+                        error = data.get("error")
+
+                        # Update group state
+                        if group_id:
+                            group_states[group_id] = status
+                            if status == "failed":
+                                failed_groups_detail.append({
+                                    "group_id": group_id,
+                                    "error": error or "Unknown error"
+                                })
+
+                        # Build progress status message
+                        msg = f"✅ Caching document:\n"
+                        msg += f"  • {filename} ({file_size:,} bytes)\n"
+
+                        # List all groups with their current status
+                        for gid, gstatus in group_states.items():
+                            if gstatus == "pending":
+                                msg += f"    - {gid}: pending\n"
+                            elif gstatus == "in_progress":
+                                msg += f"    - {gid}: in progress ...\n"
+                            elif gstatus == "done":
+                                msg += f"    - {gid}: done\n"
+                            elif gstatus == "failed":
+                                # Find error message for this group
+                                error_info = next((f for f in failed_groups_detail if f["group_id"] == gid), None)
+                                error_msg = error_info["error"] if error_info else "Unknown error"
+                                msg += f"    - {gid}: failed: {error_msg}\n"
+
+                        msg += f"\n📊 Groups: {cached_count}/{total_groups} cached"
+
+                        yield msg, self.fetch_model_logs()
+
+                    elif event_type == "complete":
+                        # Cache operation completed
+                        filename = data.get("filename")
+                        file_size = data.get("file_size")
+                        cached_count = data.get("cached_groups", 0)
+                        total_groups = data.get("total_groups", 0)
+                        failed_groups_detail = data.get("failed_groups", [])
+
+                        # Build final status message
+                        msg = f"✅ Successfully cached document:\n"
+                        msg += f"  • {filename} ({file_size:,} bytes)\n"
+
+                        # List all groups with final status
+                        for gid, gstatus in group_states.items():
+                            if gstatus == "done":
+                                msg += f"    - {gid}: done\n"
+                            elif gstatus == "failed":
+                                # Find error message for this group
+                                error_info = next((f for f in failed_groups_detail if f["group_id"] == gid), None)
+                                error_msg = error_info["error"] if error_info else "Unknown error"
+                                msg += f"    - {gid}: failed: {error_msg}\n"
+
+                        msg += f"\n📊 Groups: {cached_count}/{total_groups} cached"
+
+                        if cached_count == total_groups:
+                            msg += "\n\n🚀 KV Cache is ready for prefix matching!"
+                        elif cached_count > 0:
+                            msg += f"\n\n⚠️ Partial success. {len(failed_groups_detail)} group(s) failed."
+
+                        yield msg, self.fetch_model_logs()
+
             except httpx.HTTPStatusError as e:
                 # Try to parse JSON error response, fallback to text if not JSON
                 try:
@@ -546,62 +666,10 @@ class ChatbotWeb:
                     # Response is not JSON or has no json() method
                     error_detail = e.response.text if hasattr(e.response, 'text') else str(e)
 
-                failed_results.append({
-                    'doc_id': doc_id,
-                    'error': error_detail
-                })
+                yield f"❌ Failed to cache document {doc_id}:\n{error_detail}", self.fetch_model_logs()
+
             except Exception as e:
-                failed_results.append({
-                    'doc_id': doc_id,
-                    'error': str(e)
-                })
-
-        # Build status message
-        msg = ""
-
-        if success_results:
-            msg += f"✅ Successfully cached {len(success_results)} document(s):\n"
-            for res in success_results:
-                cached_groups = res.get('cached_groups', 0)
-                total_groups = res.get('total_groups', 0)
-                failed_groups = res.get('failed_groups', [])
-
-                msg += f"  • {res['filename']} ({res['size']} bytes)\n"
-                msg += f"    📊 Groups: {cached_groups}/{total_groups} cached"
-
-                if failed_groups:
-                    msg += f" (Failed: {', '.join(failed_groups)})"
-                msg += "\n"
-            msg += "\n🚀 KV Cache is ready for prefix matching!"
-
-        if failed_results:
-            msg += f"\n❌ Failed to cache {len(failed_results)} document(s):\n"
-            for res in failed_results:
-                msg += f"  • {res['doc_id']}: {res['error']}\n"
-
-        if not success_results and not failed_results:
-            msg = "No documents were processed"
-
-        # Fetch and display new logs after cache operation
-        import time
-        time.sleep(0.5)
-        filtered_logs = self.fetch_model_logs()
-
-        # Add real-time cache progress to logs
-        if success_results:
-            for res in success_results:
-                cached_groups = res.get('cached_groups', 0)
-                total_groups = res.get('total_groups', 0)
-                failed_groups = res.get('failed_groups', [])
-
-                if cached_groups > 0:
-                    filtered_logs += f"\n📊 Real-time Cache Progress for {res['filename']}:\n"
-                    filtered_logs += f"  ✅ Successfully cached: {cached_groups}/{total_groups} groups\n"
-                    if failed_groups:
-                        filtered_logs += f"  ❌ Failed groups: {', '.join(failed_groups)}\n"
-                    filtered_logs += f"  🚀 KV Cache ready for prefix matching!\n"
-
-        return msg, filtered_logs
+                yield f"❌ Failed to cache document {doc_id}:\n{str(e)}", self.fetch_model_logs()
 
 
 

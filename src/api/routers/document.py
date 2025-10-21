@@ -3,10 +3,13 @@ Independent document router
 Documents are managed separately from sessions
 """
 from fastapi import APIRouter, UploadFile, File, HTTPException, Form
+from fastapi.responses import StreamingResponse
 from pathlib import Path
 from typing import List, Optional
 import os
 import aiofiles
+import json
+import asyncio
 
 from models import (
     DocumentUploadResponse,
@@ -35,8 +38,8 @@ async def _cache_content_in_kv(content: str, description: str = "content") -> No
     Helper function to cache content in KV Cache by running inference
 
     This function:
-    1. Validates model server is running
-    2. Validates LLM service configuration matches running model
+    1. For local models: Validates model server is running and configuration matches
+    2. For remote models: Validates LLM service is configured correctly
     3. Runs inference with content as system message (max_tokens=2)
     4. Logs operation details
 
@@ -45,28 +48,46 @@ async def _cache_content_in_kv(content: str, description: str = "content") -> No
         description: Description for logging (e.g., "document", "group")
 
     Raises:
-        HTTPException: If model server not running or configuration mismatch
+        HTTPException: If model server not running (local) or configuration mismatch
     """
-    # Step 1: Check if model server is running
-    if not model_server._is_running():
-        raise HTTPException(
-            status_code=503,
-            detail="Model server is not running. Please start the model server first."
-        )
-
-    # Step 2: Validate LLM service configuration matches running model
+    # Get current configuration
     current_config = llm_service.get_current_config()
-    model_config = model_server.config
+    current_model_name = current_config.get('model')
 
-    if not current_config['model'] or current_config['model'] != model_config.alias:
+    if not current_model_name:
         raise HTTPException(
-            status_code=503,
-            detail=f"Model configuration mismatch. LLM service is configured for '{current_config['model']}' but model server is running '{model_config.alias}'. Please restart the model."
+            status_code=400,
+            detail="No model configured. Please select a model first."
         )
+
+    # Check if current model is remote
+    current_model = settings.get_model_by_serving_name(current_model_name)
+    is_remote = current_model and current_model.model_type == "remote"
+
+    # For local models: validate model server is running and configuration matches
+    if not is_remote:
+        # Step 1: Check if model server is running
+        if not model_server._is_running():
+            raise HTTPException(
+                status_code=503,
+                detail="Model server is not running. Please start the model server first."
+            )
+
+        # Step 2: Validate LLM service configuration matches running model
+        model_config = model_server.config
+
+        if not current_config['model'] or current_config['model'] != model_config.alias:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Model configuration mismatch. LLM service is configured for '{current_config['model']}' but model server is running '{model_config.alias}'. Please restart the model."
+            )
 
     # Step 3: Log current model and configuration
     from services.model_log import model_log_service
-    model_log_service.append_log(f"Cache operation for {description} using model: {current_config['model']}")
+    if is_remote:
+        model_log_service.append_log(f"Cache operation for {description} using remote model: {current_config['model']}")
+    else:
+        model_log_service.append_log(f"Cache operation for {description} using local model: {current_config['model']}")
     model_log_service.append_log(f"Model base_url: {current_config['base_url']}")
 
     # Step 4: Prepare messages and run inference
@@ -77,14 +98,14 @@ async def _cache_content_in_kv(content: str, description: str = "content") -> No
         }
     ]
 
-    # Temporarily override max_tokens to 2 (we only care about caching)
+    # Temporarily override max_tokens to 2 (we only care about caching/processing content)
     original_max_tokens = llm_service.completion_params.get('max_tokens')
     llm_service.completion_params['max_tokens'] = 2
 
     try:
-        # Run inference to populate KV Cache
+        # Run inference to populate KV Cache (local) or send to remote API (remote)
         async for _ in llm_service.generate_response(messages, stream=False):
-            pass  # We don't care about the response, just caching
+            pass  # We don't care about the response, just caching/processing
     finally:
         # Restore original max_tokens
         if original_max_tokens is not None:
@@ -408,6 +429,7 @@ async def delete_document(doc_id: str, model_name: Optional[str] = None):
 async def cache_document(doc_id: str):
     """
     Cache an already uploaded document in KV Cache by groups (for current model)
+    Returns SSE stream with real-time progress updates for each group
 
     This endpoint performs caching for an existing document by processing each group separately:
     1. Retrieve document from document manager (for current model)
@@ -420,137 +442,146 @@ async def cache_document(doc_id: str):
        - Prefix matching will accelerate future requests with the same document groups
 
     No server restart is needed - the cache remains in memory and is ready for use.
+
+    SSE Event Format:
+    - event: progress
+      data: {"group_id": str, "group_name": str, "status": "pending|in_progress|done|failed",
+             "cached_count": int, "total_groups": int, "error": str (optional)}
+    - event: complete
+      data: {"doc_id": str, "filename": str, "file_size": int, "cached_groups": int,
+             "total_groups": int, "failed_groups": list}
     """
-    # Check if current model is remote
-    from services.llm_service import llm_service
-    from config import settings
 
-    current_config = llm_service.get_current_config()
-    current_model_name = current_config.get("model")
+    async def generate_progress():
+        """Generator function for SSE stream"""
+        try:
+            # Check if current model is remote
+            from services.llm_service import llm_service
+            from config import settings
 
-    if not current_model_name:
-        raise HTTPException(
-            status_code=400,
-            detail="No model selected. Please select a model first."
-        )
+            current_config = llm_service.get_current_config()
+            current_model_name = current_config.get("model")
 
-    current_model = settings.get_model_by_serving_name(current_model_name) if current_model_name else None
+            if not current_model_name:
+                yield f"event: error\ndata: {json.dumps({'error': 'No model selected. Please select a model first.'})}\n\n"
+                return
 
-    is_remote = current_model and current_model.model_type == "remote"
+            current_model = settings.get_model_by_serving_name(current_model_name) if current_model_name else None
+            is_remote = current_model and current_model.model_type == "remote"
 
-    # Get document from document manager (for current model)
-    document = document_manager.get_document(doc_id, current_model_name)
-    if not document:
-        available_models = document_manager.get_available_models(doc_id)
-        if available_models:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Document with ID '{doc_id}' not processed with model '{current_model_name}'. "
-                       f"Available models: {', '.join(available_models)}. "
-                       f"Please upload the document with this model first."
-            )
-        else:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Document with ID '{doc_id}' not found"
-            )
-
-    # Get all groups from the document
-    groups = document.get_groups()
-    if not groups:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Document has no groups to cache"
-        )
-
-    # Log cache operation start
-    from services.model_log import model_log_service
-
-    model_log_service.append_log(f"🚀 Starting cache operation for document: {document.filename} (doc_id={doc_id})")
-    if is_remote:
-        model_log_service.append_log(f"ℹ️  Current model: remote ({current_model.provider})")
-        model_log_service.append_log(f"📊 Document has {len(groups)} groups to process")
-    else:
-        model_log_service.append_log(f"ℹ️  Current model: local (KV cache enabled)")
-        model_log_service.append_log(f"📊 Document has {len(groups)} groups to cache")
-    model_log_service.append_log(f"📄 Document size: {document.file_size:,} bytes")
-    model_log_service.append_log("=" * 50)
-
-    # Cache each group individually
-    cached_count = 0
-    failed_groups = []
-
-    try:
-        for group in groups:
-            group_id = group.get('group_id', '')
-            group_content = group.get('merged_content', '')
-
-            if not group_content:
-                model_log_service.append_log(f"Skipping empty group: {group_id}")
-                continue
-
-            try:
-                # Log group details before caching
-                content_length = len(group_content)
-                model_log_service.append_log(f"Starting cache for group {cached_count + 1}/{len(groups)}: {group_id} (content: {content_length} chars)")
-
-                # Both local and remote models need to call LLM inference
-                # Local: caches in KV memory for prefix matching
-                # Remote: actually calls remote API (no local KV cache effect, but still processes the content)
-                await _cache_content_in_kv(
-                    content=group_content,
-                    description=f"group '{group_id}' from document '{document.filename}'"
-                )
-
-                if is_remote:
-                    model_log_service.append_log(f"✅ Successfully processed group {cached_count + 1}/{len(groups)} with remote model: {group_id}")
+            # Get document from document manager (for current model)
+            document = document_manager.get_document(doc_id, current_model_name)
+            if not document:
+                available_models = document_manager.get_available_models(doc_id)
+                if available_models:
+                    error_msg = f"Document with ID '{doc_id}' not processed with model '{current_model_name}'. Available models: {', '.join(available_models)}. Please upload the document with this model first."
                 else:
-                    model_log_service.append_log(f"✅ Successfully cached group {cached_count + 1}/{len(groups)}: {group_id}")
+                    error_msg = f"Document with ID '{doc_id}' not found"
+                yield f"event: error\ndata: {json.dumps({'error': error_msg})}\n\n"
+                return
 
-                cached_count += 1
-            except Exception as e:
-                model_log_service.append_log(f"❌ Failed to cache group {group_id}: {str(e)}")
-                failed_groups.append(group_id)
-                # Continue with other groups even if one fails
+            # Get all groups from the document
+            groups = document.get_groups()
+            if not groups:
+                yield f"event: error\ndata: {json.dumps({'error': 'Document has no groups to cache'})}\n\n"
+                return
 
-        model_log_service.append_log("=" * 50)
-        if is_remote:
-            model_log_service.append_log(f"✅ Cache operation completed for document: {document.filename}")
-            model_log_service.append_log(f"📊 Successfully processed {cached_count}/{len(groups)} groups with remote model ({current_model.provider})")
-            model_log_service.append_log(f"ℹ️  Note: Remote models don't use local KV cache, but content was sent to remote API")
-        else:
-            model_log_service.append_log(f"✅ Cache operation completed for document: {document.filename}")
-            model_log_service.append_log(f"📊 Successfully cached {cached_count}/{len(groups)} groups")
-            model_log_service.append_log("🚀 KV Cache is ready for prefix matching!")
+            # Log cache operation start
+            from services.model_log import model_log_service
 
-        if failed_groups:
-            model_log_service.append_log(f"❌ Failed groups: {', '.join(failed_groups)}")
+            model_log_service.append_log(f"🚀 Starting cache operation for document: {document.filename} (doc_id={doc_id})")
+            if is_remote:
+                model_log_service.append_log(f"ℹ️  Current model: remote ({current_model.provider})")
+                model_log_service.append_log(f"📊 Document has {len(groups)} groups to process")
+            else:
+                model_log_service.append_log(f"ℹ️  Current model: local (KV cache enabled)")
+                model_log_service.append_log(f"📊 Document has {len(groups)} groups to cache")
+            model_log_service.append_log(f"📄 Document size: {document.file_size:,} bytes")
+            model_log_service.append_log("=" * 50)
 
-        # Return success even if some groups failed (partial success)
-        if is_remote:
-            message = f"Document '{document.filename}' processed successfully with remote model. {cached_count}/{len(groups)} groups sent to {current_model.provider}."
-        else:
-            message = f"Document '{document.filename}' cached successfully. {cached_count}/{len(groups)} groups cached."
+            # Send initial status for all groups (pending)
+            yield f"event: init\ndata: {json.dumps({'filename': document.filename, 'file_size': document.file_size, 'total_groups': len(groups), 'groups': [{'group_id': g.get('group_id', ''), 'status': 'pending'} for g in groups]})}\n\n"
 
-        if failed_groups:
-            message += f" Failed groups: {', '.join(failed_groups)}"
+            # Cache each group individually
+            cached_count = 0
+            failed_groups = []
+            failed_groups_detail = []  # Store detailed error info
 
-        return {
-            "doc_id": doc_id,
-            "filename": document.filename,
-            "file_size": document.file_size,
-            "cached_groups": cached_count,
-            "total_groups": len(groups),
-            "failed_groups": failed_groups,
-            "message": message
-        }
+            for idx, group in enumerate(groups):
+                group_id = group.get('group_id', '')
+                group_content = group.get('merged_content', '')
 
-    except Exception as e:
-        model_log_service.append_log(f"Cache operation failed for document {document.filename}: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Error caching document: {str(e)}"
-        )
+                if not group_content:
+                    model_log_service.append_log(f"Skipping empty group: {group_id}")
+                    failed_groups.append(group_id)
+                    failed_groups_detail.append({"group_id": group_id, "error": "Empty content"})
+                    yield f"event: progress\ndata: {json.dumps({'group_id': group_id, 'status': 'failed', 'cached_count': cached_count, 'total_groups': len(groups), 'error': 'Empty content'})}\n\n"
+                    continue
+
+                # Send in_progress status
+                yield f"event: progress\ndata: {json.dumps({'group_id': group_id, 'status': 'in_progress', 'cached_count': cached_count, 'total_groups': len(groups)})}\n\n"
+
+                try:
+                    # Log group details before caching
+                    content_length = len(group_content)
+                    model_log_service.append_log(f"Starting cache for group {idx + 1}/{len(groups)}: {group_id} (content: {content_length} chars)")
+
+                    # Both local and remote models need to call LLM inference
+                    await _cache_content_in_kv(
+                        content=group_content,
+                        description=f"group '{group_id}' from document '{document.filename}'"
+                    )
+
+                    if is_remote:
+                        model_log_service.append_log(f"✅ Successfully processed group {idx + 1}/{len(groups)} with remote model: {group_id}")
+                    else:
+                        model_log_service.append_log(f"✅ Successfully cached group {idx + 1}/{len(groups)}: {group_id}")
+
+                    cached_count += 1
+
+                    # Send done status
+                    yield f"event: progress\ndata: {json.dumps({'group_id': group_id, 'status': 'done', 'cached_count': cached_count, 'total_groups': len(groups)})}\n\n"
+
+                except Exception as e:
+                    error_msg = str(e)
+                    model_log_service.append_log(f"❌ Failed to cache group {group_id}: {error_msg}")
+                    failed_groups.append(group_id)
+                    failed_groups_detail.append({"group_id": group_id, "error": error_msg})
+
+                    # Send failed status
+                    yield f"event: progress\ndata: {json.dumps({'group_id': group_id, 'status': 'failed', 'cached_count': cached_count, 'total_groups': len(groups), 'error': error_msg})}\n\n"
+
+            # Log completion
+            model_log_service.append_log("=" * 50)
+            if is_remote:
+                model_log_service.append_log(f"✅ Cache operation completed for document: {document.filename}")
+                model_log_service.append_log(f"📊 Successfully processed {cached_count}/{len(groups)} groups with remote model ({current_model.provider})")
+                model_log_service.append_log(f"ℹ️  Note: Remote models don't use local KV cache, but content was sent to remote API")
+            else:
+                model_log_service.append_log(f"✅ Cache operation completed for document: {document.filename}")
+                model_log_service.append_log(f"📊 Successfully cached {cached_count}/{len(groups)} groups")
+                model_log_service.append_log("🚀 KV Cache is ready for prefix matching!")
+
+            if failed_groups:
+                model_log_service.append_log(f"❌ Failed groups: {', '.join(failed_groups)}")
+
+            # Send completion event
+            if is_remote:
+                message = f"Document '{document.filename}' processed successfully with remote model. {cached_count}/{len(groups)} groups sent to {current_model.provider}."
+            else:
+                message = f"Document '{document.filename}' cached successfully. {cached_count}/{len(groups)} groups cached."
+
+            if failed_groups:
+                message += f" Failed groups: {', '.join(failed_groups)}"
+
+            yield f"event: complete\ndata: {json.dumps({'doc_id': doc_id, 'filename': document.filename, 'file_size': document.file_size, 'cached_groups': cached_count, 'total_groups': len(groups), 'failed_groups': failed_groups_detail, 'message': message})}\n\n"
+
+        except Exception as e:
+            from services.model_log import model_log_service
+            model_log_service.append_log(f"Cache operation failed: {str(e)}")
+            yield f"event: error\ndata: {json.dumps({'error': f'Error caching document: {str(e)}'})}\n\n"
+
+    return StreamingResponse(generate_progress(), media_type="text/event-stream")
 
 
 @router.get("/{doc_id}/groups", response_model=List[GroupInfo])
