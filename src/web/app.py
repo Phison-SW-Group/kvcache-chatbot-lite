@@ -524,27 +524,24 @@ class ChatbotWeb:
 
     def cache_selected_document(self, last_uploaded_doc_ids: Optional[List[str]], selected_doc: Optional[str]) -> Generator[Tuple[str, str], None, None]:
         """
-        Cache documents in KV Cache with real-time progress updates (supports multiple documents)
-        Priority: last uploaded documents > dropdown selected document
+        Cache the currently selected document in KV Cache with real-time progress updates
+        Always uses the document selected in the dropdown menu
 
         Args:
-            last_uploaded_doc_ids: List of IDs from the most recently uploaded documents
-            selected_doc: Selected document ID from dropdown
+            last_uploaded_doc_ids: List of IDs from the most recently uploaded documents (not used for caching)
+            selected_doc: Selected document ID from dropdown (used for caching)
 
         Yields:
             Tuple[str, str]: Status message and model logs for each progress update
         """
-        # Determine which documents to cache
+        # Always use the dropdown selected document
         doc_ids_to_cache = []
 
-        # Priority: use last uploaded documents if available, otherwise use dropdown selection
-        if last_uploaded_doc_ids and len(last_uploaded_doc_ids) > 0:
-            doc_ids_to_cache = last_uploaded_doc_ids
-        elif selected_doc and selected_doc != "None":
+        if selected_doc and selected_doc != "None":
             doc_ids_to_cache = [selected_doc]
 
         if not doc_ids_to_cache:
-            yield "Please upload documents first or select one from the dropdown", ""
+            yield "Please select a document from the dropdown menu first", ""
             return
 
         # Process each document with real-time progress
@@ -1001,7 +998,7 @@ class ChatbotWeb:
             print(f"📋 Fetching documents for {selected_model}...")
             new_choices = self.get_document_choices()
             print(f"📋 Got {len(new_choices)} choice(s): {new_choices}")
-            
+
             # Auto-select the first available document (skip "No document selected" option)
             default_value = "None"
             if len(new_choices) > 1:  # More than just the "No document selected" option
@@ -1011,7 +1008,7 @@ class ChatbotWeb:
                         default_value = choice_value
                         print(f"📋 Auto-selecting first document: {choice_text} ({choice_value})")
                         break
-            
+
             print(f"{'='*60}\n")
 
             return f"✅ {message}", gr.update(choices=new_choices, value=default_value)
