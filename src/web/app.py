@@ -452,15 +452,37 @@ class ChatbotWeb:
             return [("Error loading documents", "None")]
 
     def get_model_choices(self) -> List[Tuple[str, str]]:
-        """Get list of models for dropdown"""
+        """Get list of models for dropdown with status indicators (two-emoji format)"""
         try:
             models = self.client.list_models()
             if not models:
                 return [("No models configured", "None")]
             choices = []
             for model in models:
-                # Display serving_name, use serving_name as value
-                choices.append((model['serving_name'], model['serving_name']))
+                # Determine status emoji based on model type and running status
+                # Format: [Type Emoji][Status Emoji] Model Name
+                model_type = model.get('model_type', 'unknown')
+                is_running = model.get('is_running')
+
+                if model_type == 'remote':
+                    # Remote models: cloud icon + space (no status needed)
+                    type_emoji = "☁️"
+                    status_emoji = "   "  # Space for alignment
+                elif model_type == 'local':
+                    # Local models: computer icon + status
+                    type_emoji = "💻"
+                    if is_running:
+                        status_emoji = "🟢"  # Green circle - running
+                    else:
+                        status_emoji = "⚫"  # Black circle - stopped
+                else:
+                    type_emoji = "❓"
+                    status_emoji = " "
+
+                # Format: [type][status] name
+                display_name = f"{type_emoji}{status_emoji} {model['serving_name']}"
+
+                choices.append((display_name, model['serving_name']))
             return choices
         except Exception as e:
             print(f"Error fetching models: {e}")
@@ -815,13 +837,13 @@ class ChatbotWeb:
         # Check if a model is selected
         if not selected_model or selected_model == "None":
             error_msg = "❌ Please select a model first"
-            yield error_msg, error_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
+            yield error_msg, error_msg, gr.Dropdown(choices=self.get_document_choices(), value="None"), gr.Dropdown(choices=self.get_model_choices())
             return
 
         # Initial loading message
         loading_status = f"🔄 Starting model: {selected_model}..."
         loading_log = f"🔄 Starting model server with: {selected_model}\n⏳ This may take 30-90 seconds while the model loads...\n"
-        yield loading_status, loading_log, gr.Dropdown(choices=self.get_document_choices(), value="None")
+        yield loading_status, loading_log, gr.Dropdown(choices=self.get_document_choices(), value="None"), gr.Dropdown(choices=self.get_model_choices())
 
         try:
             result = self.client.start_model_with_reset(serving_name=selected_model)
@@ -837,15 +859,15 @@ class ChatbotWeb:
                 log_msg += f"Port: {result.get('port', 'N/A')}\n"
                 log_msg += f"Time: {result['timestamp']}\n"
                 log_msg += "\n🔄 Fetching model server logs...\n"
-                yield status_msg, log_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
+                yield status_msg, log_msg, gr.Dropdown(choices=self.get_document_choices(), value="None"), gr.Dropdown(choices=self.get_model_choices())
 
                 # Wait a moment for logs to be written, then fetch filtered logs
                 import time
                 time.sleep(1)
 
-                # Fetch and display filtered logs
+                # Fetch and display filtered logs and refresh model dropdown status
                 filtered_logs = self.fetch_model_logs()
-                yield status_msg, filtered_logs, gr.Dropdown(choices=self.get_document_choices(), value="None")
+                yield status_msg, filtered_logs, gr.Dropdown(choices=self.get_document_choices(), value="None"), gr.Dropdown(choices=self.get_model_choices())
             else:
                 # Handle error cases with detailed information
                 log_msg = f"{result['message']}\n"
@@ -880,11 +902,11 @@ class ChatbotWeb:
                     if details.get('hint'):
                         log_msg += f"💡 Hint: {details['hint']}\n"
 
-                yield status_msg, log_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
+                yield status_msg, log_msg, gr.Dropdown(choices=self.get_document_choices(), value="None"), gr.Dropdown(choices=self.get_model_choices())
 
         except Exception as e:
             error_msg = f"❌ Failed to restart model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
-            yield error_msg, error_msg, gr.Dropdown(choices=self.get_document_choices(), value="None")
+            yield error_msg, error_msg, gr.Dropdown(choices=self.get_document_choices(), value="None"), gr.Dropdown(choices=self.get_model_choices())
 
     def check_prefix_tree_exists(self) -> bool:
         """
@@ -909,14 +931,14 @@ class ChatbotWeb:
             traceback.print_exc()
             return False
 
-    def start_model_without_reset(self, selected_model: Optional[str]) -> Tuple[str, str]:
+    def start_model_without_reset(self, selected_model: Optional[str]) -> Tuple[str, str, gr.Dropdown]:
         """
         Start model without resetting configuration
         Checks for prefix_tree.bin before making API call
         """
         # Check if a model is selected
         if not selected_model or selected_model == "None":
-            return "❌ Please select a model first", ""
+            return "❌ Please select a model first", "", gr.Dropdown(choices=self.get_model_choices())
 
         try:
             # First check if prefix_tree.bin exists
@@ -932,13 +954,13 @@ class ChatbotWeb:
 
                 if not result.get("prefix_tree_exists", False):
                     error_msg = debug_msg + "❌ prefix_tree.bin not found in cache directory.\n\n💡 Please use 'Start Model with Reset' first to create the cache file."
-                    return error_msg, ""
+                    return error_msg, "", gr.Dropdown(choices=self.get_model_choices())
             except Exception as e:
                 error_msg = f"🔍 DEBUG: API call failed\n"
                 error_msg += f"URL: {url}\n"
                 error_msg += f"Error: {str(e)}\n\n"
                 error_msg += "❌ Could not check prefix_tree.bin.\n\n💡 Please check backend connection."
-                return error_msg, ""
+                return error_msg, "", gr.Dropdown(choices=self.get_model_choices())
 
             # If prefix_tree.bin exists, proceed with starting model
             result = self.client.start_model_without_reset(serving_name=selected_model)
@@ -953,18 +975,19 @@ class ChatbotWeb:
             # Fetch updated logs
             logs = self.fetch_model_logs()
 
-            return status_msg, logs
+            # Return with refreshed model dropdown
+            return status_msg, logs, gr.Dropdown(choices=self.get_model_choices())
 
         except Exception as e:
             error_msg = f"❌ Failed to start model without reset: {str(e)}"
-            return error_msg, ""
+            return error_msg, "", gr.Dropdown(choices=self.get_model_choices())
 
-    def stop_model(self) -> Tuple[str, str]:
+    def stop_model(self) -> Tuple[str, str, gr.Dropdown]:
         """
         Stop the currently running model
 
         Returns:
-            Status message and model logs
+            Status message, model logs, and refreshed model dropdown
         """
         try:
             result = self.client.stop_model()
@@ -980,11 +1003,12 @@ class ChatbotWeb:
             time.sleep(0.5)
             filtered_logs = self.fetch_model_logs()
 
-            return status_msg, filtered_logs
+            # Return with refreshed model dropdown
+            return status_msg, filtered_logs, gr.Dropdown(choices=self.get_model_choices())
 
         except Exception as e:
             error_msg = f"❌ Failed to stop model: {str(e)}\n\nThis is a network or API error. Please check if the backend server is running."
-            return error_msg, ""
+            return error_msg, "", gr.Dropdown(choices=self.get_model_choices())
 
     def on_model_change(self, selected_model: str) -> tuple:
         """
@@ -1207,19 +1231,19 @@ class ChatbotWeb:
             start_btn.click(
                 fn=self.start_model_with_reset,
                 inputs=[model_dropdown],
-                outputs=[model_status, deploy_log, doc_dropdown]
+                outputs=[model_status, deploy_log, doc_dropdown, model_dropdown]  # Also refresh model dropdown
             )
 
             start_no_reset_btn.click(
                 fn=self.start_model_without_reset,
                 inputs=[model_dropdown],
-                outputs=[model_status, deploy_log]
+                outputs=[model_status, deploy_log, model_dropdown]  # Also refresh model dropdown
             )
 
             down_btn.click(
                 fn=self.stop_model,
                 inputs=[],
-                outputs=[model_status, deploy_log]
+                outputs=[model_status, deploy_log, model_dropdown]  # Also refresh model dropdown
             )
 
             # Model dropdown change - switch backend model configuration AND refresh doc list

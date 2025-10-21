@@ -51,21 +51,40 @@ class ModelInfo(BaseModel):
     serving_name: str
     model_type: str  # "local" or "remote"
     provider: Optional[str] = None  # Only for remote models
+    is_running: Optional[bool] = None  # Only for local models - indicates if server is running
 
 
 @router.get("/list")
 async def list_models() -> List[ModelInfo]:
     """
     Get list of all configured models from settings (both local and remote)
+    Includes running status for local models
     """
     try:
+        # Get current running model info
+        current_config = llm_service.get_current_config()
+        current_running_model = current_config.get("model")
+
+        # Check if model server is actually running (for local models)
+        is_server_running = model_server._is_running()
+
         models = []
         for model_config in settings.all_models:
+            is_running = None
+
+            # For local models, check if this specific model is running
+            if model_config.model_type == "local":
+                # A local model is running if:
+                # 1. Model server is running AND
+                # 2. This model is the currently configured one
+                is_running = is_server_running and (current_running_model == model_config.serving_name)
+
             models.append(ModelInfo(
                 model_name_or_path=model_config.model_name_or_path,
                 serving_name=model_config.serving_name,
                 model_type=model_config.model_type,
-                provider=model_config.provider if model_config.model_type == "remote" else None
+                provider=model_config.provider if model_config.model_type == "remote" else None,
+                is_running=is_running
             ))
         return models
     except Exception as e:
