@@ -539,6 +539,9 @@ async def cache_document(doc_id: str):
 
                     cached_count += 1
 
+                    # Mark group as cached in metadata
+                    document.mark_group_as_cached(group_id)
+
                     # Send done status
                     yield f"event: progress\ndata: {json.dumps({'group_id': group_id, 'status': 'done', 'cached_count': cached_count, 'total_groups': len(groups)})}\n\n"
 
@@ -565,6 +568,13 @@ async def cache_document(doc_id: str):
             if failed_groups:
                 model_log_service.append_log(f"❌ Failed groups: {', '.join(failed_groups)}")
 
+            # Update document cache status based on group cache status
+            document.update_document_cache_status()
+
+            # Save updated metadata to persist cache status
+            document_manager._save_document_metadata(current_model_name, doc_id)
+            model_log_service.append_log(f"💾 Cache status saved to metadata")
+
             # Send completion event
             if is_remote:
                 message = f"Document '{document.filename}' processed successfully with remote model. {cached_count}/{len(groups)} groups sent to {current_model.provider}."
@@ -582,6 +592,65 @@ async def cache_document(doc_id: str):
             yield f"event: error\ndata: {json.dumps({'error': f'Error caching document: {str(e)}'})}\n\n"
 
     return StreamingResponse(generate_progress(), media_type="text/event-stream")
+
+
+@router.get("/{doc_id}/cache-status")
+async def get_document_cache_status(doc_id: str):
+    """
+    Get cache status for a document and its groups (for current model)
+
+    Returns:
+        - doc_id: Document ID
+        - filename: Document filename
+        - cached: Whether all groups are cached
+        - last_cached_at: Last cache timestamp
+        - total_groups: Total number of groups
+        - cached_groups: Number of cached groups
+        - cache_completion: Percentage of groups cached
+        - groups: List of groups with individual cache status
+    """
+    # Get current model
+    from services.llm_service import llm_service
+    current_config = llm_service.get_current_config()
+    current_model_name = current_config.get("model")
+
+    if not current_model_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No model selected"
+        )
+
+    document = document_manager.get_document(doc_id, current_model_name)
+    if not document:
+        available_models = document_manager.get_available_models(doc_id)
+        if available_models:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document not processed with model '{current_model_name}'. Available: {', '.join(available_models)}"
+            )
+        else:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document with ID '{doc_id}' not found"
+            )
+
+    # Get cache summary
+    cache_summary = document.get_cache_summary()
+
+    # Add group-level cache details
+    groups_cache_status = []
+    for group in document.get_groups():
+        groups_cache_status.append({
+            'group_id': group.get('group_id'),
+            'cached': group.get('cached', False),
+            'cached_at': group.get('cached_at'),
+            'total_tokens': group.get('total_tokens', 0),
+            'content_length': group.get('content_length', 0)
+        })
+
+    cache_summary['groups'] = groups_cache_status
+
+    return cache_summary
 
 
 @router.get("/{doc_id}/groups", response_model=List[GroupInfo])

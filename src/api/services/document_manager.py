@@ -98,7 +98,9 @@ class DocumentMetadata:
         model_name: str,  # NEW: Model name for this processing
         total_pages: int = 0,
         uploaded_at: Optional[datetime] = None,
-        tokenizer: Optional[str] = None
+        tokenizer: Optional[str] = None,
+        cached: bool = False,  # NEW: Whether document has been cached
+        last_cached_at: Optional[datetime] = None  # NEW: Last cache timestamp
     ):
         self.doc_id = doc_id
         self.filename = filename
@@ -108,6 +110,8 @@ class DocumentMetadata:
         self.total_pages = total_pages
         self.uploaded_at = uploaded_at if uploaded_at else datetime.now()
         self.tokenizer = tokenizer  # Tokenizer used for this document
+        self.cached = cached  # NEW: Cache status
+        self.last_cached_at = last_cached_at  # NEW: Last cache time
         self.full_text: Optional[str] = None
         self.chunks: List[ChunkMetadata] = []
         self.groups: List[dict] = []  # Merged groups from document processing
@@ -129,6 +133,11 @@ class DocumentMetadata:
 
     def add_group(self, group: dict) -> None:
         """Add a merged group to this document"""
+        # Initialize cache status for new group
+        if 'cached' not in group:
+            group['cached'] = False
+        if 'cached_at' not in group:
+            group['cached_at'] = None
         self.groups.append(group)
 
     def get_groups(self) -> List[dict]:
@@ -141,6 +150,63 @@ class DocumentMetadata:
             if group.get('group_id') == group_id:
                 return group
         return None
+
+    def mark_group_as_cached(self, group_id: str) -> bool:
+        """
+        Mark a specific group as cached
+
+        Args:
+            group_id: ID of the group to mark as cached
+
+        Returns:
+            True if group was found and marked, False otherwise
+        """
+        for group in self.groups:
+            if group.get('group_id') == group_id:
+                group['cached'] = True
+                group['cached_at'] = datetime.now().isoformat()
+                return True
+        return False
+
+    def mark_all_groups_as_cached(self) -> None:
+        """Mark all groups as cached"""
+        now = datetime.now().isoformat()
+        for group in self.groups:
+            group['cached'] = True
+            group['cached_at'] = now
+
+    def update_document_cache_status(self) -> None:
+        """
+        Update document cache status based on group cache status
+        Sets cached=True and last_cached_at if all groups are cached
+        """
+        if not self.groups:
+            return
+
+        all_cached = all(group.get('cached', False) for group in self.groups)
+        if all_cached:
+            self.cached = True
+            self.last_cached_at = datetime.now()
+
+    def get_cache_summary(self) -> dict:
+        """
+        Get cache status summary for this document
+
+        Returns:
+            Dictionary with cache statistics
+        """
+        total_groups = len(self.groups)
+        cached_groups = sum(1 for group in self.groups if group.get('cached', False))
+
+        return {
+            'doc_id': self.doc_id,
+            'filename': self.filename,
+            'cached': self.cached,
+            'last_cached_at': self.last_cached_at.isoformat() if self.last_cached_at else None,
+            'total_groups': total_groups,
+            'cached_groups': cached_groups,
+            'cache_completion': (cached_groups / total_groups * 100) if total_groups > 0 else 0
+        }
 
     def to_dict(self, include_preview: bool = False, include_chunks: bool = False) -> dict:
         """
@@ -159,7 +225,10 @@ class DocumentMetadata:
             "total_chunks": len(self.chunks),
             "total_groups": len(self.groups),
             "uploaded_at": self.uploaded_at.isoformat(),
-            "tokenizer": self.tokenizer
+            "tokenizer": self.tokenizer,
+            "cached": self.cached,  # NEW: Cache status
+            "last_cached_at": self.last_cached_at.isoformat() if self.last_cached_at else None,  # NEW: Last cache time
+            "cached_groups": sum(1 for g in self.groups if g.get('cached', False))  # NEW: Count of cached groups
         }
 
         if include_preview and self.full_text:
@@ -183,13 +252,23 @@ class DocumentMetadata:
             "total_pages": self.total_pages,
             "uploaded_at": self.uploaded_at.isoformat(),
             "tokenizer": self.tokenizer,
+            "cached": self.cached,  # NEW: Cache status
+            "last_cached_at": self.last_cached_at.isoformat() if self.last_cached_at else None,  # NEW: Last cache time
             "chunks": [chunk.to_persistent_dict() for chunk in self.chunks],
-            "groups": self.groups
+            "groups": self.groups  # Groups already include cached and cached_at fields
         }
 
     @classmethod
     def from_persistent_dict(cls, data: dict) -> 'DocumentMetadata':
         """Create DocumentMetadata from persisted dictionary"""
+        # Parse last_cached_at if it exists
+        last_cached_at = None
+        if data.get("last_cached_at"):
+            try:
+                last_cached_at = datetime.fromisoformat(data["last_cached_at"])
+            except (ValueError, TypeError):
+                last_cached_at = None
+
         doc = cls(
             doc_id=data["doc_id"],
             filename=data["filename"],
@@ -198,7 +277,9 @@ class DocumentMetadata:
             model_name=data.get("model_name", "unknown"),  # NEW: Get model name
             total_pages=data.get("total_pages", 0),
             uploaded_at=datetime.fromisoformat(data["uploaded_at"]),
-            tokenizer=data.get("tokenizer")
+            tokenizer=data.get("tokenizer"),
+            cached=data.get("cached", False),  # NEW: Restore cache status
+            last_cached_at=last_cached_at  # NEW: Restore cache time
         )
 
         # Restore chunks
@@ -207,8 +288,14 @@ class DocumentMetadata:
                 chunk = ChunkMetadata.from_persistent_dict(chunk_data)
                 doc.add_chunk(chunk)
 
-        # Restore groups
+        # Restore groups (with cache status)
         if "groups" in data:
+            for group in data["groups"]:
+                # Ensure cache fields exist in group
+                if 'cached' not in group:
+                    group['cached'] = False
+                if 'cached_at' not in group:
+                    group['cached_at'] = None
             doc.groups = data["groups"]
 
         return doc
