@@ -410,7 +410,7 @@ class ChatbotWeb:
         return ""
 
     def get_document_choices(self) -> List[Tuple[str, str]]:
-        """Get list of documents for dropdown (model-specific)"""
+        """Get list of documents for dropdown (model-specific) with cache status indicators"""
         try:
             print(f"   📡 Calling backend /documents/list API...")
             docs = self.client.list_documents()
@@ -421,8 +421,28 @@ class ChatbotWeb:
                 return [("No documents uploaded for this model", "None")]
             choices = [("No document selected", "None")]
             for doc in docs:
-                print(f"      - {doc['filename']} (doc_id: {doc['doc_id']}, model: {doc.get('model_name', 'unknown')})")
-                choices.append((doc['filename'], doc['doc_id']))
+                # Determine cache status emoji
+                total_groups = doc.get('total_groups', 0)
+                cached_groups = doc.get('cached_groups', 0)
+
+                if total_groups == 0:
+                    # No groups to cache
+                    emoji = "⚪"  # White circle - no groups
+                elif cached_groups == total_groups:
+                    # All groups cached successfully
+                    emoji = "🟢"  # Green circle - fully cached
+                elif cached_groups > 0:
+                    # Partial cache (some groups failed or not cached)
+                    emoji = "🟡"  # Yellow circle - partially cached
+                else:
+                    # Not cached at all
+                    emoji = "⚪"  # White circle - not cached
+
+                # Format: emoji + filename
+                display_name = f"{emoji} {doc['filename']}"
+
+                print(f"      - {display_name} (doc_id: {doc['doc_id']}, cached: {cached_groups}/{total_groups})")
+                choices.append((display_name, doc['doc_id']))
             print(f"   ✅ Final choices: {choices}")
             return choices
         except Exception as e:

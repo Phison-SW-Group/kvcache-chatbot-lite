@@ -526,33 +526,49 @@ class DocumentManager:
             model_name: Model name to filter documents (now REQUIRED in practice)
 
         Returns:
-            List of document info for the specified model
+            List of document info for the specified model (includes cache status)
         """
         if model_name:
             # Return only documents for this model
             docs = []
             for (model, doc_id), doc in self._documents.items():
                 if model == model_name:
+                    # Calculate cache statistics
+                    total_groups = len(doc.groups)
+                    cached_groups = sum(1 for g in doc.groups if g.get('cached', False))
+
                     docs.append({
                         "doc_id": doc_id,
                         "filename": doc.filename,
                         "file_size": doc.file_size,
                         "total_pages": doc.total_pages,
                         "uploaded_at": doc.uploaded_at.isoformat(),
-                        "model_name": model
+                        "model_name": model,
+                        "cached": doc.cached,
+                        "total_groups": total_groups,
+                        "cached_groups": cached_groups,
+                        "last_cached_at": doc.last_cached_at.isoformat() if doc.last_cached_at else None
                     })
             return docs
         else:
             # Legacy support: return all documents (grouped by model)
             docs = []
             for (model, doc_id), doc in self._documents.items():
+                # Calculate cache statistics
+                total_groups = len(doc.groups)
+                cached_groups = sum(1 for g in doc.groups if g.get('cached', False))
+
                 docs.append({
                     "doc_id": doc_id,
                     "filename": doc.filename,
                     "file_size": doc.file_size,
                     "total_pages": doc.total_pages,
                     "uploaded_at": doc.uploaded_at.isoformat(),
-                    "model_name": model
+                    "model_name": model,
+                    "cached": doc.cached,
+                    "total_groups": total_groups,
+                    "cached_groups": cached_groups,
+                    "last_cached_at": doc.last_cached_at.isoformat() if doc.last_cached_at else None
                 })
             return docs
 
