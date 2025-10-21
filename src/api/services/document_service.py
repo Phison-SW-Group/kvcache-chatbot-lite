@@ -232,8 +232,6 @@ def group_remaining_by_similarity(
     def capacity_ok(current_tokens: int, add_tokens: int) -> bool:
         return current_tokens + add_tokens <= file_max_tokens
 
-    group_counter = 100000  # offset to avoid colliding with stage-1 ids
-
     for i in range(n):
         if used[i]:
             continue
@@ -261,15 +259,20 @@ def group_remaining_by_similarity(
 
         # materialize group
         selected = [remaining_chunks[idx] for idx in current]
-        group_id = f"similarity_group_{group_counter}"
+        chunk_ids = [c.chunk_id for c in selected]
+
+        # Generate group_id using new naming convention: chunk-3+7+8
+        if len(chunk_ids) == 1:
+            group_id = f"chunk-{chunk_ids[0]}"
+        else:
+            group_id = f"chunk-{'+'.join(map(str, chunk_ids))}"
+
         merged_content = "\n\n=== SIMILARITY SEPARATOR ===\n\n".join([c.content for c in selected])
         total_tokens = sum(c.token_count or 0 for c in selected)
-        chunk_ids = [c.chunk_id for c in selected]
         # set group_id back
         for c in selected:
             c.group_id = group_id
         groups.append(MergedGroup(group_id=group_id, chunk_ids=chunk_ids, total_tokens=total_tokens, merged_content=merged_content))
-        group_counter += 1
 
     # any ungrouped leftovers (should be none unless capacity 0)
     leftovers = [remaining_chunks[i] for i in range(n) if not used[i]]
@@ -368,7 +371,7 @@ def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int) -> Merg
 
     Args:
         chunks: List of chunks to merge
-        group_id_num: Numeric group identifier
+        group_id_num: Numeric group identifier (not used in new naming convention)
 
     Returns:
         MergedGroup with merged content
@@ -376,19 +379,20 @@ def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int) -> Merg
     if not chunks:
         raise ValueError("Cannot create group from empty chunk list")
 
-    # Generate group_id
-    first_chunk = chunks[0]
-    source_file = first_chunk.source_file or "unknown"
-    group_id = f"{source_file}_group{group_id_num}"
+    # Extract chunk IDs
+    chunk_ids = [c.chunk_id for c in chunks]
+
+    # Generate group_id using new naming convention: chunk-0+1+2
+    if len(chunk_ids) == 1:
+        group_id = f"chunk-{chunk_ids[0]}"
+    else:
+        group_id = f"chunk-{'+'.join(map(str, chunk_ids))}"
 
     # Merge content with separator
     merged_content = "\n\n=== CHUNK SEPARATOR ===\n\n".join([c.content for c in chunks])
 
     # Calculate total tokens
     total_tokens = sum(c.token_count for c in chunks if c.token_count is not None)
-
-    # Extract chunk IDs
-    chunk_ids = [c.chunk_id for c in chunks]
 
     # Update chunk.group_id for all chunks in this group
     for chunk in chunks:
@@ -686,8 +690,9 @@ class DocumentService:
                 # Create a single group containing the full document
                 if processed_doc.chunks:
                     full_chunk = processed_doc.chunks[0]  # Should be the single full-document chunk
-                    source_file = full_chunk.source_file or "unknown"
-                    group_id = f"{source_file}_full_document"
+
+                    # Generate group_id using new naming convention: chunk-0
+                    group_id = f"chunk-{full_chunk.chunk_id}"
 
                     # Set group_id on the chunk
                     full_chunk.group_id = group_id
