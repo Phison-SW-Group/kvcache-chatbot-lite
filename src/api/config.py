@@ -172,7 +172,7 @@ class DocumentSettings(BaseSettings):
 
     # First-stage grouping settings (token-based sequential merging)
     grouping: bool = True  # Enable token-based grouping when tokenizer available
-    file_max_tokens: int = 3000  # Maximum tokens per merged group
+    file_max_tokens: int = 15000  # Maximum tokens per merged group
     utilization_threshold: float = 0.8  # Minimum utilization for final group (0.0-1.0)
 
     # Stage-2 similarity grouping settings

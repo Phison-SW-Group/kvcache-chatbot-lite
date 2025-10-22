@@ -112,6 +112,36 @@ class ChatbotClient:
         response.raise_for_status()
         return response.json()
 
+    def upload_collection(self, file_paths: List[str], model_name: Optional[str] = None, collection_name: Optional[str] = None) -> dict:
+        """Upload multiple documents as a single collection"""
+        files_payload = []
+        open_files = []
+        try:
+            for p in file_paths:
+                f = open(p, 'rb')
+                open_files.append(f)
+                files_payload.append(('files', (p.split('/')[-1], f, 'application/pdf')))
+
+            data = {}
+            if model_name:
+                data['model_name'] = model_name
+            if collection_name:
+                data['collection_name'] = collection_name
+
+            response = self.client.post(
+                f"{self.api_base_url}/documents/upload_collection",
+                files=files_payload,
+                data=data
+            )
+            response.raise_for_status()
+            return response.json()
+        finally:
+            for f in open_files:
+                try:
+                    f.close()
+                except:
+                    pass
+
     def delete_document(self, doc_id: str) -> dict:
         """Delete a document"""
         response = self.client.delete(f"{self.api_base_url}/documents/{doc_id}")
@@ -513,43 +543,76 @@ class ChatbotWeb:
         failed_results = []
         uploaded_doc_ids = []
 
-        # Process each file
-        for file in files:
-            try:
-                # Pass model_name directly to upload API
+        try:
+            if len(files) > 1:
+                # Use collection upload when multiple files are selected
+                file_paths = [f.name for f in files]
+                result = self.client.upload_collection(file_paths, model_name=selected_model)
+
+                # Now collection upload returns single doc_id
+                collection_name = result.get('collection_name', 'collection')
+                doc_id = result.get('doc_id', '')
+                source_files = result.get('source_files', [])
+
+                # Build display info
+                files_display = ', '.join(source_files[:3])
+                if len(source_files) > 3:
+                    files_display += f' ... ({len(source_files)} files)'
+
+                success_results.append({
+                    'filename': f'📦 {collection_name}',
+                    'size': result.get('file_size', 0),
+                    'doc_id': doc_id,
+                    'model': selected_model,
+                    'source_files': files_display,
+                    'total_chunks': result.get('total_chunks', 0),
+                    'total_groups': result.get('total_groups', 0)
+                })
+
+                if doc_id:
+                    uploaded_doc_ids.append(doc_id)
+            else:
+                # Single file → use existing single-upload endpoint
+                file = files[0]
                 result = self.client.upload_document(file.name, model_name=selected_model)
                 success_results.append({
                     'filename': result['filename'],
                     'size': result['file_size'],
                     'doc_id': result['doc_id'],
-                    'model': selected_model  # Track which model was used
+                    'model': selected_model
                 })
                 uploaded_doc_ids.append(result['doc_id'])
-            except httpx.HTTPStatusError as e:
-                # Try to parse JSON error response, fallback to text if not JSON
-                try:
-                    error_detail = e.response.json().get('detail', str(e))
-                except (ValueError, AttributeError):
-                    # Response is not JSON or has no json() method
-                    error_detail = e.response.text if hasattr(e.response, 'text') else str(e)
-
-                failed_results.append({
-                    'filename': file.name.split('/')[-1],
-                    'error': error_detail
-                })
-            except Exception as e:
-                failed_results.append({
-                    'filename': file.name.split('/')[-1],
-                    'error': str(e)
-                })
+        except httpx.HTTPStatusError as e:
+            try:
+                error_detail = e.response.json().get('detail', str(e))
+            except (ValueError, AttributeError):
+                error_detail = e.response.text if hasattr(e.response, 'text') else str(e)
+            # When multiple upload fails, attach a generic item
+            failed_results.append({
+                'filename': 'collection' if len(files) > 1 else files[0].name.split('/')[-1],
+                'error': error_detail
+            })
+        except Exception as e:
+            failed_results.append({
+                'filename': 'collection' if len(files) > 1 else files[0].name.split('/')[-1],
+                'error': str(e)
+            })
 
         # Build status message
         msg = ""
 
         if success_results:
-            msg += f"✅ Successfully uploaded {len(success_results)} file(s) with model '{selected_model}':\n"
+            msg += f"✅ Successfully uploaded with model '{selected_model}':\n"
             for res in success_results:
-                msg += f"  • {res['filename']} ({res['size']} bytes)\n"
+                if 'source_files' in res:
+                    # Collection upload
+                    msg += f"  • {res['filename']}\n"
+                    msg += f"    - Source files: {res['source_files']}\n"
+                    msg += f"    - Size: {res['size']:,} bytes\n"
+                    msg += f"    - Chunks: {res['total_chunks']}, Groups: {res['total_groups']}\n"
+                else:
+                    # Single file upload
+                    msg += f"  • {res['filename']} ({res['size']:,} bytes)\n"
 
         if failed_results:
             msg += f"\n❌ Failed to upload {len(failed_results)} file(s):\n"

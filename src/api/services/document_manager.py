@@ -28,7 +28,8 @@ class ChunkMetadata:
         group_id: Optional[str] = None,
         start_page: Optional[int] = None,
         end_page: Optional[int] = None,
-        page_key: Optional[str] = None
+        page_key: Optional[str] = None,
+        collection_id: Optional[str] = None
     ):
         self.chunk_id = chunk_id
         self.content = content
@@ -41,6 +42,7 @@ class ChunkMetadata:
         self.start_page = start_page
         self.end_page = end_page
         self.page_key = page_key
+        self.collection_id = collection_id
 
     def to_dict(self, include_content: bool = True) -> dict:
         """Convert to dictionary format"""
@@ -54,7 +56,8 @@ class ChunkMetadata:
             "group_id": self.group_id,
             "start_page": self.start_page,
             "end_page": self.end_page,
-            "page_key": self.page_key
+            "page_key": self.page_key,
+            "collection_id": self.collection_id
         }
         if include_content:
             result["content"] = self.content
@@ -78,7 +81,8 @@ class ChunkMetadata:
             group_id=data.get("group_id"),
             start_page=data.get("start_page"),
             end_page=data.get("end_page"),
-            page_key=data.get("page_key")
+            page_key=data.get("page_key"),
+            collection_id=data.get("collection_id")
         )
 
 
@@ -100,7 +104,9 @@ class DocumentMetadata:
         uploaded_at: Optional[datetime] = None,
         tokenizer: Optional[str] = None,
         cached: bool = False,  # NEW: Whether document has been cached
-        last_cached_at: Optional[datetime] = None  # NEW: Last cache timestamp
+        last_cached_at: Optional[datetime] = None,  # NEW: Last cache timestamp
+        collection_id: Optional[str] = None,  # NEW: Collection ID for grouped documents
+        source_files: Optional[List[str]] = None  # NEW: Source files for collection
     ):
         self.doc_id = doc_id
         self.filename = filename
@@ -112,6 +118,8 @@ class DocumentMetadata:
         self.tokenizer = tokenizer  # Tokenizer used for this document
         self.cached = cached  # NEW: Cache status
         self.last_cached_at = last_cached_at  # NEW: Last cache time
+        self.collection_id = collection_id  # NEW: Collection ID
+        self.source_files = source_files or []  # NEW: Source files list
         self.full_text: Optional[str] = None
         self.chunks: List[ChunkMetadata] = []
         self.groups: List[dict] = []  # Merged groups from document processing
@@ -221,6 +229,8 @@ class DocumentMetadata:
             "filename": self.filename,
             "file_size": self.file_size,
             "model_name": self.model_name,  # NEW: Include model name
+            "collection_id": self.collection_id,  # NEW: Include collection ID
+            "source_files": self.source_files,  # NEW: Include source files
             "total_pages": self.total_pages,
             "total_chunks": len(self.chunks),
             "total_groups": len(self.groups),
@@ -249,6 +259,8 @@ class DocumentMetadata:
             "file_size": self.file_size,
             "file_path": str(self.file_path),
             "model_name": self.model_name,  # NEW: Include model name
+            "collection_id": self.collection_id,  # NEW: Include collection ID
+            "source_files": self.source_files,  # NEW: Include source files
             "total_pages": self.total_pages,
             "uploaded_at": self.uploaded_at.isoformat(),
             "tokenizer": self.tokenizer,
@@ -279,7 +291,9 @@ class DocumentMetadata:
             uploaded_at=datetime.fromisoformat(data["uploaded_at"]),
             tokenizer=data.get("tokenizer"),
             cached=data.get("cached", False),  # NEW: Restore cache status
-            last_cached_at=last_cached_at  # NEW: Restore cache time
+            last_cached_at=last_cached_at,  # NEW: Restore cache time
+            collection_id=data.get("collection_id"),  # NEW: Restore collection ID
+            source_files=data.get("source_files", [])  # NEW: Restore source files
         )
 
         # Restore chunks

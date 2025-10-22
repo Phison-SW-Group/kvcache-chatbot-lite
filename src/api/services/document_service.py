@@ -29,6 +29,7 @@ class DocumentChunk:
     start_page: Optional[int] = None
     end_page: Optional[int] = None
     page_key: Optional[str] = None
+    collection_id: Optional[str] = None
 
     def to_dict(self) -> dict:
         """Convert to dictionary format"""
@@ -43,7 +44,8 @@ class DocumentChunk:
             "group_id": self.group_id,
             "start_page": self.start_page,
             "end_page": self.end_page,
-            "page_key": self.page_key
+            "page_key": self.page_key,
+            "collection_id": self.collection_id
         }
 
 
@@ -196,6 +198,71 @@ class BM25Scorer:
         return sims
 
 # ============================================================================
+# Helper Functions
+# ============================================================================
+
+def compress_chunk_ids(chunk_ids: List[str]) -> str:
+    """
+    Compress consecutive chunk IDs using range notation.
+    Special case: If chunks are [0, 1, 2, ..., n] (consecutive from 0), returns '~'
+
+    Args:
+        chunk_ids: List of chunk ID strings (e.g., ['1', '2', '3', '5', '6', '8'])
+
+    Returns:
+        Compressed string (e.g., '1~3+5~6+8' or '~' for complete from-zero sequence)
+
+    Examples:
+        ['1', '2', '3', '4', '5'] -> '1~5'
+        ['0', '1', '2', '3', '4'] -> '~'  (complete from 0)
+        ['1', '2', '3', '5', '6', '8'] -> '1~3+5~6+8'
+        ['0'] -> '0'
+        ['1', '3', '5'] -> '1+3+5'
+    """
+    if not chunk_ids:
+        return ""
+
+    # Convert to integers and sort
+    ids = sorted(int(id_str) for id_str in chunk_ids)
+
+    # Special case: Check if this is a complete sequence from 0
+    # i.e., [0, 1, 2, 3, ..., n] with no gaps
+    if ids[0] == 0 and len(ids) > 1:
+        expected = list(range(len(ids)))
+        if ids == expected:
+            return "~"
+
+    if len(ids) == 1:
+        return str(ids[0])
+
+    # Find consecutive ranges
+    ranges = []
+    start = ids[0]
+    end = ids[0]
+
+    for i in range(1, len(ids)):
+        if ids[i] == end + 1:
+            # Consecutive, extend current range
+            end = ids[i]
+        else:
+            # Not consecutive, save current range and start new one
+            if start == end:
+                ranges.append(str(start))
+            else:
+                ranges.append(f"{start}~{end}")
+            start = ids[i]
+            end = ids[i]
+
+    # Don't forget the last range
+    if start == end:
+        ranges.append(str(start))
+    else:
+        ranges.append(f"{start}~{end}")
+
+    return '+'.join(ranges)
+
+
+# ============================================================================
 # Second-Stage Similarity Grouping
 # ============================================================================
 
@@ -261,11 +328,29 @@ def group_remaining_by_similarity(
         selected = [remaining_chunks[idx] for idx in current]
         chunk_ids = [c.chunk_id for c in selected]
 
-        # Generate group_id using new naming convention: chunk-3+7+8
-        if len(chunk_ids) == 1:
+        # Generate group_id with source file information: chunk-file1:3+7-file2:8
+        # Group chunks by source_file while maintaining order
+        from collections import OrderedDict
+        from pathlib import Path
+        file_chunks = OrderedDict()
+        for c in selected:
+            source = c.source_file or "unknown"
+            if source not in file_chunks:
+                file_chunks[source] = []
+            file_chunks[source].append(str(c.chunk_id))
+
+        # Build group_id parts
+        if len(file_chunks) == 1 and len(selected) == 1:
+            # Single chunk: chunk-3
             group_id = f"chunk-{chunk_ids[0]}"
         else:
-            group_id = f"chunk-{'+'.join(map(str, chunk_ids))}"
+            # Multiple chunks or files: chunk-file1:1~5+7~9-file2:8 or chunk-file1:~
+            parts = []
+            for source, ids in file_chunks.items():
+                source_name = Path(source).stem if source != "unknown" else "unknown"
+                compressed_ids = compress_chunk_ids(ids)
+                parts.append(f"{source_name[:10]}:{compressed_ids}")
+            group_id = f"chunk-{'-'.join(parts)}"
 
         merged_content = "\n\n=== SIMILARITY SEPARATOR ===\n\n".join([c.content for c in selected])
         total_tokens = sum(c.token_count or 0 for c in selected)
@@ -382,11 +467,30 @@ def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int) -> Merg
     # Extract chunk IDs
     chunk_ids = [c.chunk_id for c in chunks]
 
-    # Generate group_id using new naming convention: chunk-0+1+2
-    if len(chunk_ids) == 1:
+    # Generate group_id with source file information: chunk-file1.pdf:0+1-file2.pdf:2+3
+    # Group chunks by source_file while maintaining order
+    from collections import OrderedDict
+    file_chunks = OrderedDict()
+    for c in chunks:
+        source = c.source_file or "unknown"
+        if source not in file_chunks:
+            file_chunks[source] = []
+        file_chunks[source].append(str(c.chunk_id))
+
+    # Build group_id parts
+    if len(file_chunks) == 1 and len(chunks) == 1:
+        # Single chunk: chunk-0 (no file prefix for brevity)
         group_id = f"chunk-{chunk_ids[0]}"
     else:
-        group_id = f"chunk-{'+'.join(map(str, chunk_ids))}"
+        # Multiple chunks or files: chunk-file1:0~2+5-file2:3~4 or chunk-file1:~
+        parts = []
+        for source, ids in file_chunks.items():
+            # Use stem (filename without extension) for brevity
+            from pathlib import Path
+            source_name = Path(source).stem if source != "unknown" else "unknown"
+            compressed_ids = compress_chunk_ids(ids)
+            parts.append(f"{source_name[:10]}:{compressed_ids}")
+        group_id = f"chunk-{'-'.join(parts)}"
 
     # Merge content with separator
     merged_content = "\n\n=== CHUNK SEPARATOR ===\n\n".join([c.content for c in chunks])
@@ -667,9 +771,9 @@ class DocumentService:
                     print(f"   - Total grouped tokens: {total_grouped_tokens:,}")
                     print(f"   - Average tokens per group: {avg_tokens:.0f}")
 
-                # Stage-2 similarity grouping for remaining chunks (no group_id)
+                # Stage-2 similarity grouping for remaining chunks
+                # FIX: Use the 'remaining' variable returned from stage-1, not re-filter from chunks
                 from config import settings as _settings
-                remaining = [c for c in processed_doc.chunks if not c.group_id]
                 if remaining:
                     print(f"🔎 Stage-2 similarity grouping on {len(remaining)} remaining chunks...")
                     new_groups, leftovers = group_remaining_by_similarity(
@@ -691,8 +795,13 @@ class DocumentService:
                 if processed_doc.chunks:
                     full_chunk = processed_doc.chunks[0]  # Should be the single full-document chunk
 
-                    # Generate group_id using new naming convention: chunk-0
-                    group_id = f"chunk-{full_chunk.chunk_id}"
+                    # Generate group_id with source file info if available
+                    if full_chunk.source_file:
+                        from pathlib import Path
+                        source_name = Path(full_chunk.source_file).stem
+                        group_id = f"chunk-{source_name}:{full_chunk.chunk_id}"
+                    else:
+                        group_id = f"chunk-{full_chunk.chunk_id}"
 
                     # Set group_id on the chunk
                     full_chunk.group_id = group_id
@@ -714,6 +823,145 @@ class DocumentService:
 
         return processed_doc
 
+    async def process_documents_as_collection(
+        self,
+        file_paths: List[Path],
+        collection_id: Optional[str] = None
+    ) -> Dict[str, any]:
+        """
+        Process multiple documents as a single collection with cross-file two-stage grouping
+
+        Args:
+            file_paths: List of paths to document files
+            collection_id: Optional collection identifier (auto-generated if not provided)
+
+        Returns:
+            Dictionary containing:
+            - collection_id: Unique collection identifier
+            - processed_documents: List of ProcessedDocument objects
+            - all_chunks: Combined list of all chunks from all documents
+            - collection_groups: Groups after cross-file two-stage grouping
+            - remaining_chunks: Chunks that couldn't be grouped
+        """
+        import uuid
+        from datetime import datetime
+
+        if collection_id is None:
+            # Generate collection ID with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            collection_id = f"collection_{timestamp}_{str(uuid.uuid4())[:8]}"
+
+        print(f"\n{'='*80}")
+        print(f"🔄 Processing {len(file_paths)} documents as collection: {collection_id}")
+        print(f"{'='*80}\n")
+
+        # Step 1: Process each document individually to get chunks
+        processed_documents = []
+        all_chunks = []
+
+        for idx, file_path in enumerate(file_paths, 1):
+            print(f"📄 [{idx}/{len(file_paths)}] Processing: {file_path.name}")
+
+            # Process single document (without grouping to get raw chunks)
+            # Temporarily disable grouping
+            original_grouping = self.grouping
+            self.grouping = False
+
+            try:
+                processed_doc = await self.process_document(file_path)
+                processed_documents.append(processed_doc)
+
+                # Add source file info to chunks for tracking
+                for chunk in processed_doc.chunks:
+                    chunk.source_file = file_path.name
+                    chunk.collection_id = collection_id
+                    all_chunks.append(chunk)
+
+                print(f"   ✅ Extracted {len(processed_doc.chunks)} chunks")
+
+            finally:
+                # Restore grouping setting
+                self.grouping = original_grouping
+
+        print(f"\n{'='*80}")
+        print(f"📊 Collection Summary:")
+        print(f"   - Total documents: {len(processed_documents)}")
+        print(f"   - Total chunks: {len(all_chunks)}")
+        print(f"{'='*80}\n")
+
+        # Step 2: Perform cross-file two-stage grouping on all chunks
+        collection_groups = []
+        remaining_chunks = []
+
+        if self.grouping and all_chunks:
+            # Check if tokenizer is available
+            from services.tokenizer_manager import tokenizer_manager
+
+            if tokenizer_manager.is_loaded():
+                print(f"🔄 Starting cross-file two-stage grouping...")
+                print(f"   - Tokenizer: {tokenizer_manager.tokenizer_name}")
+                print(f"   - Max tokens per group: {self.file_max_tokens}")
+                print(f"   - Utilization threshold: {self.utilization_threshold}")
+
+                # Stage 1: Token-based sequential grouping (across all files)
+                print(f"\n📍 Stage 1: Token-based sequential grouping")
+                groups, remaining = group_chunks_by_token_budget(
+                    chunks=all_chunks,
+                    file_max_tokens=self.file_max_tokens,
+                    utilization_threshold=self.utilization_threshold
+                )
+
+                print(f"   ✅ Stage 1 completed:")
+                print(f"      - Created groups: {len(groups)}")
+                print(f"      - Remaining chunks: {len(remaining)}")
+
+                if groups:
+                    total_tokens = sum(g.total_tokens for g in groups)
+                    avg_tokens = total_tokens / len(groups)
+                    print(f"      - Total grouped tokens: {total_tokens:,}")
+                    print(f"      - Average tokens per group: {avg_tokens:.0f}")
+
+                collection_groups.extend(groups)
+
+                # Stage 2: Similarity-based grouping for remaining chunks
+                if remaining:
+                    print(f"\n📍 Stage 2: Similarity-based grouping")
+                    from config import settings as _settings
+
+                    new_groups, leftovers = group_remaining_by_similarity(
+                        remaining_chunks=remaining,
+                        file_max_tokens=self.file_max_tokens,
+                        scorer=None,  # default BM25
+                        min_similarity=_settings.documents.similarity_min_score,
+                    )
+
+                    print(f"   ✅ Stage 2 completed:")
+                    print(f"      - Created groups: {len(new_groups)}")
+                    print(f"      - Leftover chunks: {len(leftovers)}")
+
+                    collection_groups.extend(new_groups)
+                    remaining_chunks = leftovers
+
+                print(f"\n{'='*80}")
+                print(f"✅ Cross-file grouping completed:")
+                print(f"   - Total groups: {len(collection_groups)}")
+                print(f"   - Remaining ungrouped chunks: {len(remaining_chunks)}")
+                print(f"{'='*80}\n")
+            else:
+                print(f"ℹ️  No tokenizer available - skipping grouping")
+                # Create single group for all content
+                remaining_chunks = all_chunks
+
+        return {
+            "collection_id": collection_id,
+            "processed_documents": processed_documents,
+            "all_chunks": all_chunks,
+            "collection_groups": collection_groups,
+            "remaining_chunks": remaining_chunks,
+            "total_documents": len(processed_documents),
+            "total_chunks": len(all_chunks),
+            "total_groups": len(collection_groups)
+        }
 
 # Global document service instance
 # Import settings to get chunking parameters

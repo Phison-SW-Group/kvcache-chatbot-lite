@@ -274,6 +274,236 @@ async def upload_document(
         raise HTTPException(status_code=500, detail=f"Error processing document: {str(e)}")
 
 
+@router.post("/upload_collection")
+async def upload_collection(
+    files: List[UploadFile] = File(...),
+    model_name: Optional[str] = Form(None),
+    collection_name: Optional[str] = Form(None)
+):
+    """
+    Upload multiple PDF documents as a collection with cross-file two-stage grouping
+    All documents will be processed together and grouped across files
+
+    Args:
+        files: List of PDF files to upload
+        model_name: Model name to use for processing (if not provided, uses current llm_service model)
+        collection_name: Optional collection name (auto-generated if not provided)
+    """
+    from services.llm_service import llm_service
+    from services.tokenizer_manager import tokenizer_manager
+    from services.document_service import document_service
+    from services.document_manager import document_manager, ChunkMetadata
+    import uuid
+    from datetime import datetime
+
+    print(f"\n{'='*80}")
+    print(f"📤 Collection upload request:")
+    print(f"   - Files: {[f.filename for f in files]}")
+    print(f"   - Model: {model_name}")
+    print(f"   - Collection: {collection_name}")
+    print(f"{'='*80}\n")
+
+    # Validate files
+    if not files or len(files) == 0:
+        raise HTTPException(status_code=400, detail="No files provided")
+
+    # Get model name - prefer explicit parameter, fallback to llm_service
+    if model_name:
+        current_model_name = model_name
+        print(f"📤 Collection upload with explicit model parameter: {model_name}")
+
+        # Switch llm_service and tokenizer to this model
+        selected_model = settings.get_model_by_serving_name(model_name)
+        if not selected_model:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Model '{model_name}' not found in configuration"
+            )
+
+        # Reconfigure LLM service (same as single upload)
+        completion_params_dict = selected_model.completion_params.model_dump(exclude={'custom_params'})
+        if selected_model.completion_params.custom_params:
+            completion_params_dict.update(selected_model.completion_params.custom_params)
+
+        llm_service.reconfigure(
+            model=selected_model.serving_name,
+            api_key=selected_model.api_key,
+            base_url=selected_model.base_url,
+            **completion_params_dict
+        )
+
+        # Load tokenizer for this model
+        tokenizer_manager.load_tokenizer(model_name)
+    else:
+        # Fallback to current llm_service model
+        current_config = llm_service.get_current_config()
+        current_model_name = current_config.get("model")
+        print(f"📤 Collection upload using llm_service model: {current_model_name}")
+
+    if not current_model_name:
+        raise HTTPException(
+            status_code=400,
+            detail="No model specified. Please provide model_name parameter or select a model first."
+        )
+
+    # Create model directory
+    model_dir = document_manager._get_model_directory(current_model_name)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    # Save all uploaded files temporarily
+    file_paths = []
+    filenames = []
+    total_file_size = 0
+
+    try:
+        for file in files:
+            # Validate file extension
+            file_ext = Path(file.filename).suffix.lower()
+            if not document_service.supports_extension(file_ext):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Unsupported file type: {file_ext}. Only PDF files are supported."
+                )
+
+            # Save file to model directory temporarily
+            temp_filename = f"{uuid.uuid4().hex[:8]}_{file.filename}"
+            file_path = model_dir / temp_filename
+            with open(file_path, "wb") as buffer:
+                content = await file.read()
+                buffer.write(content)
+                total_file_size += len(content)
+
+            file_paths.append(file_path)
+            filenames.append(file.filename)
+            print(f"✅ Saved temporarily: {file.filename} → {file_path.name}")
+
+        # Generate collection name based on naming rule
+        if not collection_name:
+            if len(files) == 1:
+                # Single file: use filename without extension
+                collection_name = Path(filenames[0]).stem
+            else:
+                # Multiple files: join first 10 chars of each filename
+                truncated_names = [Path(fn).stem[:10] for fn in filenames]
+                collection_name = '-'.join(truncated_names)
+
+        print(f"\n📦 Collection name: {collection_name}")
+
+        # Generate collection doc_id
+        import hashlib
+        collection_hash = hashlib.md5(collection_name.encode()).hexdigest()[:12]
+        collection_doc_id = collection_hash
+
+        # Process all documents as a collection
+        print(f"\n🔄 Processing collection with {len(file_paths)} documents...")
+        collection_result = await document_service.process_documents_as_collection(
+            file_paths=file_paths,
+            collection_id=collection_name
+        )
+
+        # Merge all processed documents into one
+        merged_full_text = ""
+        merged_chunks = []
+        total_pages = 0
+
+        for idx, processed_doc in enumerate(collection_result["processed_documents"]):
+            # Accumulate full text
+            merged_full_text += processed_doc.full_text
+            if idx < len(collection_result["processed_documents"]) - 1:
+                merged_full_text += "\n\n"  # Separator between documents
+
+            total_pages += processed_doc.total_pages
+
+        # Use all chunks from collection (already cross-file processed)
+        for chunk in collection_result["all_chunks"]:
+            chunk_meta = ChunkMetadata(
+                chunk_id=chunk.chunk_id,
+                content=chunk.content,
+                page_numbers=chunk.page_numbers,
+                char_count=chunk.char_count,
+                token_count=chunk.token_count,
+                source_file=chunk.source_file,
+                chunk_index=chunk.chunk_index,
+                group_id=chunk.group_id,
+                start_page=chunk.start_page,
+                end_page=chunk.end_page,
+                page_key=chunk.page_key,
+                collection_id=collection_name
+            )
+            merged_chunks.append(chunk_meta)
+
+        # Get tokenizer name
+        tokenizer_name = collection_result["processed_documents"][0].tokenizer if collection_result["processed_documents"] else current_model_name
+
+        # Add single collection document to manager
+        doc_id = document_manager.add_document(
+            filename=collection_name,  # Use collection name as filename
+            file_size=total_file_size,
+            file_path=file_paths[0] if len(file_paths) == 1 else model_dir / f"{collection_doc_id}_collection",  # Virtual path for multi-file
+            model_name=current_model_name,
+            full_text=merged_full_text,
+            chunks=merged_chunks,
+            total_pages=total_pages,
+            tokenizer=tokenizer_name,
+            doc_id=collection_doc_id
+        )
+
+        # Update document with collection info and groups
+        doc_metadata = document_manager.get_document(doc_id, current_model_name)
+        if doc_metadata:
+            # Add collection ID
+            doc_metadata.collection_id = collection_name
+
+            # Add source files info (custom field)
+            doc_metadata.source_files = filenames
+
+            # Add groups from collection result
+            for group in collection_result["collection_groups"]:
+                group_dict = group.to_dict()
+                doc_metadata.add_group(group_dict)
+
+            # Save updated metadata
+            document_manager._save_document_metadata(current_model_name, doc_id)
+
+        # Clean up temporary files (keep only if single file)
+        if len(file_paths) > 1:
+            for file_path in file_paths:
+                if file_path.exists():
+                    file_path.unlink()
+            print(f"🧹 Cleaned up {len(file_paths)} temporary files")
+
+        # Prepare response
+        response = {
+            "collection_id": collection_name,
+            "collection_name": collection_name,
+            "doc_id": collection_doc_id,
+            "model_name": current_model_name,
+            "total_documents": len(filenames),
+            "total_chunks": collection_result["total_chunks"],
+            "total_groups": collection_result["total_groups"],
+            "source_files": filenames,
+            "file_size": total_file_size
+        }
+
+        print(f"\n{'='*80}")
+        print(f"✅ Collection upload completed:")
+        print(f"   - Collection: {collection_name}")
+        print(f"   - Doc ID: {collection_doc_id}")
+        print(f"   - Source files: {len(filenames)}")
+        print(f"   - Total chunks: {collection_result['total_chunks']}")
+        print(f"   - Total groups: {collection_result['total_groups']}")
+        print(f"{'='*80}\n")
+
+        return response
+
+    except Exception as e:
+        # Clean up files on error
+        for file_path in file_paths:
+            if file_path.exists():
+                file_path.unlink()
+        raise HTTPException(status_code=500, detail=f"Error processing collection: {str(e)}")
+
+
 @router.get("/list")
 async def list_documents():
     """
