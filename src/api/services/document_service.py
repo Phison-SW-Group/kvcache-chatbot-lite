@@ -344,40 +344,36 @@ def group_remaining_by_similarity(
             file_chunks[source].append(str(c.chunk_id))
 
         # Build group_id parts
-        if len(file_chunks) == 1 and len(selected) == 1:
-            # Single chunk: group-3
-            group_id = f"group-[{chunk_ids[0]}]"
-        else:
-            # Multiple chunks or files: group-file1:1~5+7~9-file2:8 or group-file1:~
-            parts = []
-            for source, ids in file_chunks.items():
-                # Extract original filename from temporary filename
-                # Format: {original_stem}_{hashid}{extension}
-                if source == "unknown":
-                    source_name = "unknown"
+        # Always include source file information for consistency
+        parts = []
+        for source, ids in file_chunks.items():
+            # Extract original filename from temporary filename
+            # Format: {original_stem}_{hashid}{extension}
+            if source == "unknown":
+                source_name = "unknown"
+            else:
+                # Extract original filename by removing hashid suffix
+                # Pattern: {stem}_{hashid}{ext} -> {stem}
+                path_obj = Path(source)
+                stem = path_obj.stem
+                ext = path_obj.suffix
+
+                # Check if stem ends with hashid pattern (8 chars + underscore)
+                if '_' in stem and len(stem.split('_')[-1]) == 8:
+                    # Remove the hashid part: {stem}_{hashid} -> {stem}
+                    original_stem = '_'.join(stem.split('_')[:-1])
+                    source_name = original_stem
                 else:
-                    # Extract original filename by removing hashid suffix
-                    # Pattern: {stem}_{hashid}{ext} -> {stem}
-                    path_obj = Path(source)
-                    stem = path_obj.stem
-                    ext = path_obj.suffix
+                    # Fallback to original logic
+                    source_name = stem
 
-                    # Check if stem ends with hashid pattern (8 chars + underscore)
-                    if '_' in stem and len(stem.split('_')[-1]) == 8:
-                        # Remove the hashid part: {stem}_{hashid} -> {stem}
-                        original_stem = '_'.join(stem.split('_')[:-1])
-                        source_name = original_stem
-                    else:
-                        # Fallback to original logic
-                        source_name = stem
+                # Truncate for brevity
+                source_name = source_name[:10]
 
-                    # Truncate for brevity
-                    source_name = source_name[:10]
-
-                # Note: In Stage-2, we don't have file_total_chunks info, so we can't use '~'
-                compressed_ids = compress_chunk_ids(ids, total_chunks=None)
-                parts.append(f"{source_name}:{compressed_ids}")
-            group_id = f"group-{'[' + ']['.join(parts) + ']'}"
+            # Note: In Stage-2, we don't have file_total_chunks info, so we can't use '~'
+            compressed_ids = compress_chunk_ids(ids, total_chunks=None)
+            parts.append(f"{source_name}:{compressed_ids}")
+        group_id = f"group-{'[' + ']['.join(parts) + ']'}"
 
         merged_content = "\n\n=== SIMILARITY SEPARATOR ===\n\n".join([c.content for c in selected])
         total_tokens = sum(c.token_count or 0 for c in selected)
@@ -406,15 +402,17 @@ def group_chunks_by_token_budget(
     Algorithm:
     1. Group chunks by source_file
     2. For each file, accumulate chunks sequentially until hitting token limit
-    3. If last group has utilization < threshold, leave chunks ungrouped for stage 2
+    3. Create groups for same-document chunks regardless of utilization
+       (preserves document continuity over utilization optimization)
 
     Args:
         chunks: List of DocumentChunk with token_count filled
         file_max_tokens: Maximum tokens per group
-        utilization_threshold: Minimum utilization rate for final group (default 0.8)
+        utilization_threshold: (Deprecated) No longer used for same-document grouping
 
     Returns:
         Tuple of (merged_groups, remaining_chunks_for_stage2)
+        Note: remaining_chunks will be empty as all same-document chunks are now grouped
     """
     if not chunks:
         return [], []
@@ -449,16 +447,10 @@ def group_chunks_by_token_budget(
 
             # Check if adding this chunk exceeds budget
             if current_tokens + chunk_tokens > file_max_tokens and current_group_chunks:
-                # Save current group
-                utilization = current_tokens / file_max_tokens
-                if utilization >= utilization_threshold:
-                    # High utilization: create group
-                    group = _create_merged_group(current_group_chunks, group_counter, file_total_chunks)
-                    merged_groups.append(group)
-                    group_counter += 1
-                else:
-                    # Low utilization: add to remaining
-                    remaining_chunks.extend(current_group_chunks)
+                # Save current group (always create group for same-document chunks)
+                group = _create_merged_group(current_group_chunks, group_counter, file_total_chunks)
+                merged_groups.append(group)
+                group_counter += 1
 
                 # Start new group
                 current_group_chunks = [chunk]
@@ -469,15 +461,12 @@ def group_chunks_by_token_budget(
                 current_tokens += chunk_tokens
 
         # Handle last group for this file
+        # For same-document chunks, always create group regardless of utilization
+        # This preserves document continuity which is more important than utilization optimization
         if current_group_chunks:
-            utilization = current_tokens / file_max_tokens
-            if utilization >= utilization_threshold:
-                group = _create_merged_group(current_group_chunks, group_counter, file_total_chunks)
-                merged_groups.append(group)
-                group_counter += 1
-            else:
-                # Low utilization: add to remaining for stage 2
-                remaining_chunks.extend(current_group_chunks)
+            group = _create_merged_group(current_group_chunks, group_counter, file_total_chunks)
+            merged_groups.append(group)
+            group_counter += 1
 
     return merged_groups, remaining_chunks
 
@@ -511,42 +500,38 @@ def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int, file_to
         file_chunks[source].append(str(c.chunk_id))
 
     # Build group_id parts
-    if len(file_chunks) == 1 and len(chunks) == 1:
-        # Single chunk: group-0 (no file prefix for brevity)
-        group_id = f"group-[{chunk_ids[0]}]"
-    else:
-        # Multiple chunks or files: group-file1:0~2+5-file2:3~4 or group-file1:~
-        parts = []
-        for source, ids in file_chunks.items():
-            # Extract original filename from temporary filename
-            # Format: {original_stem}_{hashid}{extension}
-            from pathlib import Path
-            if source == "unknown":
-                source_name = "unknown"
+    # Always include source file information for consistency
+    parts = []
+    for source, ids in file_chunks.items():
+        # Extract original filename from temporary filename
+        # Format: {original_stem}_{hashid}{extension}
+        from pathlib import Path
+        if source == "unknown":
+            source_name = "unknown"
+        else:
+            # Extract original filename by removing hashid suffix
+            # Pattern: {stem}_{hashid}{ext} -> {stem}
+            path_obj = Path(source)
+            stem = path_obj.stem
+            ext = path_obj.suffix
+
+            # Check if stem ends with hashid pattern (8 chars + underscore)
+            if '_' in stem and len(stem.split('_')[-1]) == 8:
+                # Remove the hashid part: {stem}_{hashid} -> {stem}
+                original_stem = '_'.join(stem.split('_')[:-1])
+                source_name = original_stem
             else:
-                # Extract original filename by removing hashid suffix
-                # Pattern: {stem}_{hashid}{ext} -> {stem}
-                path_obj = Path(source)
-                stem = path_obj.stem
-                ext = path_obj.suffix
+                # Fallback to original logic
+                source_name = stem
 
-                # Check if stem ends with hashid pattern (8 chars + underscore)
-                if '_' in stem and len(stem.split('_')[-1]) == 8:
-                    # Remove the hashid part: {stem}_{hashid} -> {stem}
-                    original_stem = '_'.join(stem.split('_')[:-1])
-                    source_name = original_stem
-                else:
-                    # Fallback to original logic
-                    source_name = stem
+            # Truncate for brevity
+            source_name = source_name[:10]
 
-                # Truncate for brevity
-                source_name = source_name[:10]
-
-            # Get total chunks for this source file
-            total_chunks = file_total_chunks.get(source) if file_total_chunks else None
-            compressed_ids = compress_chunk_ids(ids, total_chunks)
-            parts.append(f"{source_name}:{compressed_ids}")
-        group_id = f"group-{'[' + ']['.join(parts) + ']'}"
+        # Get total chunks for this source file
+        total_chunks = file_total_chunks.get(source) if file_total_chunks else None
+        compressed_ids = compress_chunk_ids(ids, total_chunks)
+        parts.append(f"{source_name}:{compressed_ids}")
+    group_id = f"group-{'[' + ']['.join(parts) + ']'}"
 
     # Merge content with separator
     merged_content = "\n\n=== CHUNK SEPARATOR ===\n\n".join([c.content for c in chunks])
