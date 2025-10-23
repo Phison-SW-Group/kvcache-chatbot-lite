@@ -162,7 +162,7 @@ class DocumentSettings(BaseSettings):
     allowed_extensions: List[str] = [".pdf"]
 
     # Chunking settings for PDF documents
-    chunk_size: int = 5000  # Maximum characters per chunk
+    chunk_size: int = 2000  # Maximum characters per chunk
     chunk_overlap: int = 200  # Overlap between chunks for context continuity
 
     # Tokenizer settings
@@ -172,7 +172,7 @@ class DocumentSettings(BaseSettings):
 
     # First-stage grouping settings (token-based sequential merging)
     grouping: bool = True  # Enable token-based grouping when tokenizer available
-    file_max_tokens: int = 15000  # Maximum tokens per merged group
+    file_max_tokens: int = 4000  # Maximum tokens per merged group
     utilization_threshold: float = 0.8  # Minimum utilization for final group (0.0-1.0)
 
     # Stage-2 similarity grouping settings
