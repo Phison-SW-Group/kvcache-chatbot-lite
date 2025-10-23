@@ -45,7 +45,9 @@ class ChatbotClient:
     def __init__(self, api_base_url: str):
         self.api_base_url = api_base_url
         self.session_id = str(uuid.uuid4())
-        self.client = httpx.Client(timeout=30.0)
+        # No timeout - allow unlimited time for long document processing and LLM responses
+        # This ensures frontend waits as long as backend needs to complete the request
+        self.client = httpx.Client(timeout=None)
 
     def upload_document(self, file_path: str, model_name: Optional[str] = None) -> dict:
         """Upload a document (independent of session) with specified model"""
