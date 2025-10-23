@@ -45,10 +45,18 @@ def _prepare_document_context(request: MessageRequest):
         print(f"⚠️ WARNING: Document {request.document_id} not found for model {model_name}")
         return None, None
 
+    # Debug: Check document groups
+    print(f"DEBUG: use_rag={request.use_rag}")
+    print(f"DEBUG: doc.get_groups()={doc.get_groups()}")
+    print(f"DEBUG: len(doc.get_groups())={len(doc.get_groups()) if doc.get_groups() else 0}")
+
     # Use RAG retrieval if enabled and groups are available
     if request.use_rag and doc.get_groups():
-        # Prepare groups with merged_content (rebuild if missing for backward compatibility)
+        # Prepare chunks and groups for chunk-based retrieval
+        chunks_list = [chunk.to_dict() for chunk in doc.chunks]
         groups = doc.get_groups()
+
+        # Ensure groups have merged_content (rebuild if missing for backward compatibility)
         enriched_groups = []
         for group in groups:
             if not group.get('merged_content'):
@@ -61,13 +69,13 @@ def _prepare_document_context(request: MessageRequest):
                 group['merged_content'] = "\n\n".join(chunk_contents)
             enriched_groups.append(group)
 
-        # Retrieve most similar group using RAG
-        print(f"DEBUG: Total groups to search: {len(enriched_groups)}")
-        for i, g in enumerate(enriched_groups):
-            print(f"  Group {i}: {g.get('group_id', 'unknown')}, content_length: {len(g.get('merged_content', ''))}")
+        # Retrieve by chunk (match query to chunks, then map to group)
+        print(f"DEBUG: Total chunks to search: {len(chunks_list)}")
+        print(f"DEBUG: Total groups for mapping: {len(enriched_groups)}")
 
-        results = rag_service.retrieve_most_similar_group(
+        results = rag_service.retrieve_by_chunk_with_group(
             query=request.message,
+            chunks=chunks_list,
             groups=enriched_groups,
             top_k=1,
             document_name=doc.filename
@@ -76,16 +84,16 @@ def _prepare_document_context(request: MessageRequest):
         print(f"DEBUG: RAG returned {len(results)} result(s)")
         if results:
             for i, r in enumerate(results):
-                print(f"  Result {i}: group_id={r.group_id}, score={r.similarity_score:.4f}")
+                print(f"  Result {i}: chunk {r.matched_chunk_id} in group {r.group_id}, score={r.similarity_score:.4f}")
 
         if results:
-            # Use the most similar group as context
+            # Use the mapped group as context for LLM
             best_match = results[0]
-            print(f"🔍 RAG: Retrieved group '{best_match.group_id}' with similarity {best_match.similarity_score:.4f}")
+            print(f"🔍 RAG: Retrieved chunk {best_match.matched_chunk_id} in group '{best_match.group_id}' with similarity {best_match.similarity_score:.4f}")
 
             context = {
                 "role": "system",
-                # "content": f"Relevant context from document '{doc.filename}':\n\n{best_match.content}"
+                # Group content goes to LLM for full context
                 "content": f"{best_match.content}\n\nRelevant to the document context above"
             }
 
@@ -94,7 +102,11 @@ def _prepare_document_context(request: MessageRequest):
                 "similarity_score": float(best_match.similarity_score),
                 "method": "rag",
                 "filename": doc.filename,
-                "content_preview": best_match.content[:500] if best_match.content else ""  # First 500 chars
+                # Chunk content for frontend preview (not the full group)
+                "content_preview": best_match.matched_chunk_content[:500] if best_match.matched_chunk_content else "",
+                # Additional chunk metadata for frontend
+                "matched_chunk_id": best_match.matched_chunk_id,
+                "matched_chunk_metadata": best_match.matched_chunk_metadata
             }
 
             return context, rag_info

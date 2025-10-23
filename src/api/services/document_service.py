@@ -387,6 +387,126 @@ def group_remaining_by_similarity(
     return groups, leftovers
 
 
+def _merge_groups_by_similarity(
+    groups: List[MergedGroup],
+    chunks: List[DocumentChunk],
+    file_max_tokens: int,
+    min_similarity: float = 0.0
+) -> List[MergedGroup]:
+    """
+    Stage-2: Merge existing groups based on content similarity
+
+    This function takes groups from Stage-1 and attempts to merge them
+    based on BM25 similarity while respecting token budget constraints.
+
+    Merging format: group-[AAA] + group-[BBB] = group-[AAA]-[BBB]
+    All affected chunks' group_id are updated to maintain consistency.
+
+    Args:
+        groups: List of MergedGroup from Stage-1
+        chunks: List of all DocumentChunks (to update group_id)
+        file_max_tokens: Maximum tokens per merged group
+        min_similarity: Minimum similarity threshold for merging (default 0.0)
+
+    Returns:
+        List of merged groups with updated group_ids
+    """
+    if not groups or len(groups) == 1:
+        return groups
+
+    # Ensure min_similarity has a valid value
+    if min_similarity is None:
+        min_similarity = 0.0
+
+    # Create a mapping from chunk_id to chunk object for quick lookup
+    chunk_map = {c.chunk_id: c for c in chunks}
+
+    # Use internal BM25 scorer for similarity calculation
+    scorer = BM25Scorer()
+    group_contents = [g.merged_content for g in groups]
+    similarity_matrix = scorer.compute_similarity_matrix(group_contents)
+
+    # Track which groups have been merged and their group_ids
+    merged = [False] * len(groups)
+    result_groups = []
+
+    for i in range(len(groups)):
+        if merged[i]:
+            continue
+
+        # Start a new merged group with group i
+        current_chunks_ids = set(groups[i].chunk_ids)
+        current_tokens = groups[i].total_tokens
+        merged_group_ids = [groups[i].group_id]  # Track which groups were merged
+
+        # Try to merge with similar groups
+        for j in range(i + 1, len(groups)):
+            if merged[j]:
+                continue
+
+            # Check if we can fit this group
+            combined_tokens = current_tokens + groups[j].total_tokens
+            if combined_tokens > file_max_tokens:
+                continue
+
+            # Get similarity between groups i and j
+            similarity = similarity_matrix[i][j]
+
+            # Handle None similarity (skip if similarity is None)
+            if similarity is None:
+                continue
+
+            if similarity >= min_similarity:
+                # Merge group j into current
+                current_chunks_ids.update(groups[j].chunk_ids)
+                current_tokens = combined_tokens
+                merged_group_ids.append(groups[j].group_id)
+                merged[j] = True
+
+        # Now create the merged group
+        # Get all chunks for this merged group
+        merged_chunks = [chunk_map[cid] for cid in current_chunks_ids if cid in chunk_map]
+
+        if not merged_chunks:
+            continue
+
+        # Generate new group_id
+        if len(merged_group_ids) == 1:
+            # No merge happened, keep original group_id
+            new_group_id = merged_group_ids[0]
+        else:
+            # Merge happened: extract the bracketed parts and combine
+            # group-[AAA] + group-[BBB] = group-[AAA]-[BBB]
+            parts = []
+            for gid in merged_group_ids:
+                # Extract content between "group-" and end
+                if gid.startswith("group-"):
+                    bracket_part = gid[6:]  # Remove "group-" prefix
+                    parts.append(bracket_part)
+
+            new_group_id = f"group-{'-'.join(parts)}"
+
+        # Update all chunks' group_id
+        for chunk in merged_chunks:
+            chunk.group_id = new_group_id
+
+        # Create merged content
+        merged_content = "\n\n=== SIMILARITY SEPARATOR ===\n\n".join([c.content for c in merged_chunks])
+
+        # Create the new group
+        new_group = MergedGroup(
+            group_id=new_group_id,
+            chunk_ids=sorted(list(current_chunks_ids)),
+            total_tokens=current_tokens,
+            merged_content=merged_content
+        )
+
+        result_groups.append(new_group)
+        merged[i] = True
+
+    return result_groups
+
+
 # ============================================================================
 # First-Stage Sequential Grouping (Token-based)
 # ============================================================================
@@ -799,12 +919,12 @@ class DocumentService:
                     utilization_threshold=self.utilization_threshold
                 )
 
-                # Update processed_doc with groups
+                # Update processed_doc with groups from Stage 1
                 processed_doc.groups = groups
 
-                print(f"✅ First-stage grouping completed:")
+                print(f"✅ Stage-1 grouping completed:")
                 print(f"   - Total groups: {len(groups)}")
-                print(f"   - Remaining chunks for stage 2: {len(remaining)}")
+                print(f"   - Remaining chunks for legacy stage 2: {len(remaining)}")
 
                 if groups:
                     total_grouped_tokens = sum(g.total_tokens for g in groups)
@@ -812,11 +932,22 @@ class DocumentService:
                     print(f"   - Total grouped tokens: {total_grouped_tokens:,}")
                     print(f"   - Average tokens per group: {avg_tokens:.0f}")
 
-                # Stage-2 similarity grouping for remaining chunks
-                # FIX: Use the 'remaining' variable returned from stage-1, not re-filter from chunks
+                # Stage-2: Merge groups by similarity (NEW)
                 from config import settings as _settings
+                if groups and len(groups) > 1:
+                    print(f"\n🔎 Stage-2: Merging groups by similarity...")
+                    merged_groups = _merge_groups_by_similarity(
+                        groups=groups,
+                        chunks=processed_doc.chunks,
+                        file_max_tokens=self.file_max_tokens,
+                        min_similarity=_settings.documents.similarity_min_score
+                    )
+                    processed_doc.groups = merged_groups
+                    print(f"✅ Stage-2 completed: {len(groups)} groups → {len(merged_groups)} groups")
+
+                # Legacy Stage-2: Handle remaining chunks if any (should be rare now)
                 if remaining:
-                    print(f"🔎 Stage-2 similarity grouping on {len(remaining)} remaining chunks...")
+                    print(f"\n🔎 Legacy Stage-2: Grouping {len(remaining)} remaining chunks...")
                     new_groups, leftovers = group_remaining_by_similarity(
                         remaining_chunks=remaining,
                         file_max_tokens=self.file_max_tokens,
@@ -826,7 +957,7 @@ class DocumentService:
                     if processed_doc.groups is None:
                         processed_doc.groups = []
                     processed_doc.groups.extend(new_groups)
-                    print(f"✅ Stage-2 created {len(new_groups)} groups; leftovers: {len(leftovers)}")
+                    print(f"✅ Legacy Stage-2 created {len(new_groups)} groups; leftovers: {len(leftovers)}")
             else:
                 # Case 2: No tokenizer - create single group with full document content
                 print(f"ℹ️  No tokenizer configured - creating single full-document group")
@@ -976,12 +1107,24 @@ class DocumentService:
                     print(f"      - Total grouped tokens: {total_tokens:,}")
                     print(f"      - Average tokens per group: {avg_tokens:.0f}")
 
-                collection_groups.extend(groups)
+                collection_groups = groups
 
-                # Stage 2: Similarity-based grouping for remaining chunks
+                # Stage-2: Merge groups by similarity (NEW)
+                from config import settings as _settings
+                if groups and len(groups) > 1:
+                    print(f"\n📍 Stage-2: Merging groups by similarity...")
+                    merged_groups = _merge_groups_by_similarity(
+                        groups=groups,
+                        chunks=all_chunks,
+                        file_max_tokens=self.file_max_tokens,
+                        min_similarity=_settings.documents.similarity_min_score
+                    )
+                    collection_groups = merged_groups
+                    print(f"   ✅ Stage-2 completed: {len(groups)} groups → {len(merged_groups)} groups")
+
+                # Legacy Stage-2: Handle remaining chunks if any (should be rare now)
                 if remaining:
-                    print(f"\n📍 Stage 2: Similarity-based grouping")
-                    from config import settings as _settings
+                    print(f"\n📍 Legacy Stage-2: Grouping {len(remaining)} remaining chunks...")
 
                     new_groups, leftovers = group_remaining_by_similarity(
                         remaining_chunks=remaining,
@@ -990,7 +1133,7 @@ class DocumentService:
                         min_similarity=_settings.documents.similarity_min_score,
                     )
 
-                    print(f"   ✅ Stage 2 completed:")
+                    print(f"   ✅ Legacy Stage-2 completed:")
                     print(f"      - Created groups: {len(new_groups)}")
                     print(f"      - Leftover chunks: {len(leftovers)}")
 
