@@ -10,6 +10,7 @@ import os
 import aiofiles
 import json
 import asyncio
+import hashlib
 
 from models import (
     DocumentUploadResponse,
@@ -211,11 +212,13 @@ async def upload_document(
     model_dir = Path(settings.documents.upload_dir) / safe_model_name
     model_dir.mkdir(parents=True, exist_ok=True)
 
-    # Save file in model directory with doc_id prefix: {doc_id}_{filename}
-    file_path = model_dir / f"{doc_id}_{file.filename}"
+    # Save file in model directory with doc_id suffix: {filename_stem}_{doc_id}{extension}
+    file_stem = Path(file.filename).stem
+    file_ext = Path(file.filename).suffix
+    file_path = model_dir / f"{file_stem}_{doc_id}{file_ext}"
 
     print(f"📁 Model directory: {safe_model_name}/")
-    print(f"📄 File will be saved as: {doc_id}_{file.filename}")
+    print(f"📄 File will be saved as: {file_stem}_{doc_id}{file_ext}")
 
     try:
         # Save file (overwrite if exists)
@@ -365,8 +368,11 @@ async def upload_collection(
                     detail=f"Unsupported file type: {file_ext}. Only PDF files are supported."
                 )
 
-            # Save file to model directory temporarily
-            temp_filename = f"{uuid.uuid4().hex[:8]}_{file.filename}"
+            # Save file to model directory temporarily (consistent with single upload)
+            file_hash = hashlib.md5(file.filename.encode()).hexdigest()[:8]
+            file_stem = Path(file.filename).stem
+            file_ext = Path(file.filename).suffix
+            temp_filename = f"{file_stem}_{file_hash}{file_ext}"
             file_path = model_dir / temp_filename
             with open(file_path, "wb") as buffer:
                 content = await file.read()
@@ -385,12 +391,11 @@ async def upload_collection(
             else:
                 # Multiple files: join first 10 chars of each filename
                 truncated_names = [Path(fn).stem[:10] for fn in filenames]
-                collection_name = '-'.join(truncated_names)
+                collection_name = 'collection-[' + ']['.join(truncated_names) + ']'
 
         print(f"\n📦 Collection name: {collection_name}")
 
         # Generate collection doc_id
-        import hashlib
         collection_hash = hashlib.md5(collection_name.encode()).hexdigest()[:12]
         collection_doc_id = collection_hash
 

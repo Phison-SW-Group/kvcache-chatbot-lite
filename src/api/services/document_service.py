@@ -328,7 +328,7 @@ def group_remaining_by_similarity(
         selected = [remaining_chunks[idx] for idx in current]
         chunk_ids = [c.chunk_id for c in selected]
 
-        # Generate group_id with source file information: chunk-file1:3+7-file2:8
+        # Generate group_id with source file information: group-file1:3+7-file2:8
         # Group chunks by source_file while maintaining order
         from collections import OrderedDict
         from pathlib import Path
@@ -341,16 +341,38 @@ def group_remaining_by_similarity(
 
         # Build group_id parts
         if len(file_chunks) == 1 and len(selected) == 1:
-            # Single chunk: chunk-3
-            group_id = f"chunk-{chunk_ids[0]}"
+            # Single chunk: group-3
+            group_id = f"group-[{chunk_ids[0]}]"
         else:
-            # Multiple chunks or files: chunk-file1:1~5+7~9-file2:8 or chunk-file1:~
+            # Multiple chunks or files: group-file1:1~5+7~9-file2:8 or group-file1:~
             parts = []
             for source, ids in file_chunks.items():
-                source_name = Path(source).stem if source != "unknown" else "unknown"
+                # Extract original filename from temporary filename
+                # Format: {original_stem}_{hashid}{extension}
+                if source == "unknown":
+                    source_name = "unknown"
+                else:
+                    # Extract original filename by removing hashid suffix
+                    # Pattern: {stem}_{hashid}{ext} -> {stem}
+                    path_obj = Path(source)
+                    stem = path_obj.stem
+                    ext = path_obj.suffix
+
+                    # Check if stem ends with hashid pattern (8 chars + underscore)
+                    if '_' in stem and len(stem.split('_')[-1]) == 8:
+                        # Remove the hashid part: {stem}_{hashid} -> {stem}
+                        original_stem = '_'.join(stem.split('_')[:-1])
+                        source_name = original_stem
+                    else:
+                        # Fallback to original logic
+                        source_name = stem
+
+                    # Truncate for brevity
+                    source_name = source_name[:10]
+
                 compressed_ids = compress_chunk_ids(ids)
-                parts.append(f"{source_name[:10]}:{compressed_ids}")
-            group_id = f"chunk-{'-'.join(parts)}"
+                parts.append(f"{source_name}:{compressed_ids}")
+            group_id = f"group-{'[' + ']['.join(parts) + ']'}"
 
         merged_content = "\n\n=== SIMILARITY SEPARATOR ===\n\n".join([c.content for c in selected])
         total_tokens = sum(c.token_count or 0 for c in selected)
@@ -467,7 +489,7 @@ def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int) -> Merg
     # Extract chunk IDs
     chunk_ids = [c.chunk_id for c in chunks]
 
-    # Generate group_id with source file information: chunk-file1.pdf:0+1-file2.pdf:2+3
+    # Generate group_id with source file information: group-file1.pdf:0+1-file2.pdf:2+3
     # Group chunks by source_file while maintaining order
     from collections import OrderedDict
     file_chunks = OrderedDict()
@@ -479,18 +501,39 @@ def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int) -> Merg
 
     # Build group_id parts
     if len(file_chunks) == 1 and len(chunks) == 1:
-        # Single chunk: chunk-0 (no file prefix for brevity)
-        group_id = f"chunk-{chunk_ids[0]}"
+        # Single chunk: group-0 (no file prefix for brevity)
+        group_id = f"group-[{chunk_ids[0]}]"
     else:
-        # Multiple chunks or files: chunk-file1:0~2+5-file2:3~4 or chunk-file1:~
+        # Multiple chunks or files: group-file1:0~2+5-file2:3~4 or group-file1:~
         parts = []
         for source, ids in file_chunks.items():
-            # Use stem (filename without extension) for brevity
+            # Extract original filename from temporary filename
+            # Format: {original_stem}_{hashid}{extension}
             from pathlib import Path
-            source_name = Path(source).stem if source != "unknown" else "unknown"
+            if source == "unknown":
+                source_name = "unknown"
+            else:
+                # Extract original filename by removing hashid suffix
+                # Pattern: {stem}_{hashid}{ext} -> {stem}
+                path_obj = Path(source)
+                stem = path_obj.stem
+                ext = path_obj.suffix
+
+                # Check if stem ends with hashid pattern (8 chars + underscore)
+                if '_' in stem and len(stem.split('_')[-1]) == 8:
+                    # Remove the hashid part: {stem}_{hashid} -> {stem}
+                    original_stem = '_'.join(stem.split('_')[:-1])
+                    source_name = original_stem
+                else:
+                    # Fallback to original logic
+                    source_name = stem
+
+                # Truncate for brevity
+                source_name = source_name[:10]
+
             compressed_ids = compress_chunk_ids(ids)
-            parts.append(f"{source_name[:10]}:{compressed_ids}")
-        group_id = f"chunk-{'-'.join(parts)}"
+            parts.append(f"{source_name}:{compressed_ids}")
+        group_id = f"group-{'[' + ']['.join(parts) + ']'}"
 
     # Merge content with separator
     merged_content = "\n\n=== CHUNK SEPARATOR ===\n\n".join([c.content for c in chunks])
@@ -798,10 +841,22 @@ class DocumentService:
                     # Generate group_id with source file info if available
                     if full_chunk.source_file:
                         from pathlib import Path
-                        source_name = Path(full_chunk.source_file).stem
-                        group_id = f"chunk-{source_name}:{full_chunk.chunk_id}"
+                        # Extract original filename from temporary filename
+                        path_obj = Path(full_chunk.source_file)
+                        stem = path_obj.stem
+
+                        # Check if stem ends with hashid pattern (8 chars + underscore)
+                        if '_' in stem and len(stem.split('_')[-1]) == 8:
+                            # Remove the hashid part: {stem}_{hashid} -> {stem}
+                            original_stem = '_'.join(stem.split('_')[:-1])
+                            source_name = original_stem[:10]  # Truncate for brevity
+                        else:
+                            # Fallback to original logic
+                            source_name = stem[:10]
+
+                        group_id = f"group-[{source_name}:{full_chunk.chunk_id}]"
                     else:
-                        group_id = f"chunk-{full_chunk.chunk_id}"
+                        group_id = f"group-[{full_chunk.chunk_id}]"
 
                     # Set group_id on the chunk
                     full_chunk.group_id = group_id
