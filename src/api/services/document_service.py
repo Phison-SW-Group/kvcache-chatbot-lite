@@ -201,23 +201,25 @@ class BM25Scorer:
 # Helper Functions
 # ============================================================================
 
-def compress_chunk_ids(chunk_ids: List[str]) -> str:
+def compress_chunk_ids(chunk_ids: List[str], total_chunks: Optional[int] = None) -> str:
     """
     Compress consecutive chunk IDs using range notation.
-    Special case: If chunks are [0, 1, 2, ..., n] (consecutive from 0), returns '~'
+    Special case: If chunks represent ALL chunks of a file, returns '~'
 
     Args:
         chunk_ids: List of chunk ID strings (e.g., ['1', '2', '3', '5', '6', '8'])
+        total_chunks: Total number of chunks in the source file. If provided and chunk_ids
+                     contains all chunks [0, 1, ..., total_chunks-1], returns '~'
 
     Returns:
-        Compressed string (e.g., '1~3+5~6+8' or '~' for complete from-zero sequence)
+        Compressed string (e.g., '1~3+5~6+8' or '~' for complete file)
 
     Examples:
-        ['1', '2', '3', '4', '5'] -> '1~5'
-        ['0', '1', '2', '3', '4'] -> '~'  (complete from 0)
-        ['1', '2', '3', '5', '6', '8'] -> '1~3+5~6+8'
-        ['0'] -> '0'
-        ['1', '3', '5'] -> '1+3+5'
+        (['0', '1', '2', '3'], total_chunks=4) -> '~'  (complete file)
+        (['0'], total_chunks=1) -> '~'  (single chunk file)
+        (['0', '1', '3', '4'], total_chunks=5) -> '0~1+3~4'  (incomplete)
+        (['1', '2', '3', '4', '5'], total_chunks=None) -> '1~5'  (no total info)
+        (['0', '1', '3', '4']) -> '0~1+3~4'  (has gaps)
     """
     if not chunk_ids:
         return ""
@@ -225,14 +227,16 @@ def compress_chunk_ids(chunk_ids: List[str]) -> str:
     # Convert to integers and sort
     ids = sorted(int(id_str) for id_str in chunk_ids)
 
-    # Special case: Check if this is a complete sequence from 0
-    # i.e., [0, 1, 2, 3, ..., n] with no gaps
-    if ids[0] == 0 and len(ids) > 1:
-        expected = list(range(len(ids)))
+    # Special case: Check if this represents ALL chunks of the file
+    if total_chunks is not None:
+        expected = list(range(total_chunks))
         if ids == expected:
             return "~"
 
     if len(ids) == 1:
+        # Single chunk: only use '~' if it's chunk 0 AND total_chunks is 1
+        if total_chunks == 1 and ids[0] == 0:
+            return "~"
         return str(ids[0])
 
     # Find consecutive ranges
@@ -370,7 +374,8 @@ def group_remaining_by_similarity(
                     # Truncate for brevity
                     source_name = source_name[:10]
 
-                compressed_ids = compress_chunk_ids(ids)
+                # Note: In Stage-2, we don't have file_total_chunks info, so we can't use '~'
+                compressed_ids = compress_chunk_ids(ids, total_chunks=None)
                 parts.append(f"{source_name}:{compressed_ids}")
             group_id = f"group-{'[' + ']['.join(parts) + ']'}"
 
@@ -426,6 +431,11 @@ def group_chunks_by_token_budget(
     for source in file_chunks:
         file_chunks[source].sort(key=lambda c: c.chunk_index if c.chunk_index is not None else c.chunk_id)
 
+    # Build file_total_chunks mapping
+    file_total_chunks: Dict[str, int] = {}
+    for source, chunk_list in file_chunks.items():
+        file_total_chunks[source] = len(chunk_list)
+
     merged_groups: List[MergedGroup] = []
     remaining_chunks: List[DocumentChunk] = []
     group_counter = 0
@@ -443,7 +453,7 @@ def group_chunks_by_token_budget(
                 utilization = current_tokens / file_max_tokens
                 if utilization >= utilization_threshold:
                     # High utilization: create group
-                    group = _create_merged_group(current_group_chunks, group_counter)
+                    group = _create_merged_group(current_group_chunks, group_counter, file_total_chunks)
                     merged_groups.append(group)
                     group_counter += 1
                 else:
@@ -462,7 +472,7 @@ def group_chunks_by_token_budget(
         if current_group_chunks:
             utilization = current_tokens / file_max_tokens
             if utilization >= utilization_threshold:
-                group = _create_merged_group(current_group_chunks, group_counter)
+                group = _create_merged_group(current_group_chunks, group_counter, file_total_chunks)
                 merged_groups.append(group)
                 group_counter += 1
             else:
@@ -472,13 +482,14 @@ def group_chunks_by_token_budget(
     return merged_groups, remaining_chunks
 
 
-def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int) -> MergedGroup:
+def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int, file_total_chunks: Optional[Dict[str, int]] = None) -> MergedGroup:
     """
     Create a MergedGroup from a list of chunks
 
     Args:
         chunks: List of chunks to merge
         group_id_num: Numeric group identifier (not used in new naming convention)
+        file_total_chunks: Dict mapping source_file to total number of chunks in that file
 
     Returns:
         MergedGroup with merged content
@@ -531,7 +542,9 @@ def _create_merged_group(chunks: List[DocumentChunk], group_id_num: int) -> Merg
                 # Truncate for brevity
                 source_name = source_name[:10]
 
-            compressed_ids = compress_chunk_ids(ids)
+            # Get total chunks for this source file
+            total_chunks = file_total_chunks.get(source) if file_total_chunks else None
+            compressed_ids = compress_chunk_ids(ids, total_chunks)
             parts.append(f"{source_name}:{compressed_ids}")
         group_id = f"group-{'[' + ']['.join(parts) + ']'}"
 
@@ -854,9 +867,11 @@ class DocumentService:
                             # Fallback to original logic
                             source_name = stem[:10]
 
-                        group_id = f"group-[{source_name}:{full_chunk.chunk_id}]"
+                        # Single full-document chunk (chunk_id=0), use '~' to indicate complete file
+                        group_id = f"group-[{source_name}:~]"
                     else:
-                        group_id = f"group-[{full_chunk.chunk_id}]"
+                        # No source file info, but still a complete document
+                        group_id = f"group-[~]"
 
                     # Set group_id on the chunk
                     full_chunk.group_id = group_id
