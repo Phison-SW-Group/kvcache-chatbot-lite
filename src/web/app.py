@@ -362,30 +362,21 @@ class ChatbotWeb:
         # Stream response from backend
         full_response = ""
         rag_info_displayed = False
+        rag_prefix = ""
         try:
             for chunk, rag_info in self.client.stream_message(message, doc_id, model_name):
-                # Update document selection message with RAG info
+                # Prepend RAG info to the bot response
                 if rag_info and not rag_info_displayed:
                     rag_preview = self._format_rag_preview(rag_info)
                     if rag_preview:
-                        # Find and update the document selection system message
-                        for i in range(len(history) - 2, -1, -1):  # Search backwards, skip last (current message)
-                            user_msg, bot_msg = history[i]
-                            if user_msg == "" and "📄 **Document Selected:**" in bot_msg:
-                                # Replace the hint text with RAG preview
-                                lines = bot_msg.split("\n")
-                                # Keep the first 3 lines (filename, size/groups, empty line)
-                                # Replace the hint line
-                                if len(lines) >= 3:
-                                    updated_msg = "\n".join(lines[:3]) + "\n" + rag_preview
-                                    history[i] = ("", updated_msg)
-                                    yield history, "", ""
-                                break
+                        # Add RAG info as prefix to bot response with separator
+                        rag_prefix = rag_preview + "\n\n---\n\n"
                         rag_info_displayed = True
 
                 # Append chunks to response
                 full_response += chunk
-                history[-1] = (message, full_response)
+                # Display RAG info at the beginning of bot response
+                history[-1] = (message, rag_prefix + full_response)
                 yield history, "", ""
 
             # After response is complete, fetch and display new logs
