@@ -308,7 +308,7 @@ class ModelServer:
         import socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            sock.bind(('localhost', self.config.port))
+            sock.bind(('localhost', self.config.other_kwargs.port))
             sock.close()
             return False  # Port is free, server not running
         except OSError:
@@ -317,7 +317,7 @@ class ModelServer:
 
     def _is_http_ready(self) -> bool:
         """Check if HTTP endpoint is responding (OpenAI-compatible)."""
-        url = f"http://localhost:{self.config.port}/v1/models"
+        url = f"http://localhost:{self.config.other_kwargs.port}/v1/models"
         try:
             with urllib.request.urlopen(url, timeout=2.0) as resp:
                 return 200 <= resp.status < 300
@@ -397,7 +397,7 @@ class ModelServer:
         """Check if chat/completions endpoint is ready (not returning 503)."""
         import json
 
-        url = f"http://localhost:{self.config.port}/v1/chat/completions"
+        url = f"http://localhost:{self.config.other_kwargs.port}/v1/chat/completions"
 
         # Prepare a simple test request
         test_payload = {
@@ -601,12 +601,12 @@ class ModelServer:
             model_log_service.append_log("Waiting for model to load...")
 
             if self._wait_until_ready(timeout_seconds=900):
-                model_log_service.append_log(f"✅ Model server started and ready (PID={self.process.pid}, Port={self.config.port})")
+                model_log_service.append_log(f"✅ Model server started and ready (PID={self.process.pid}, Port={self.config.other_kwargs.port})")
                 return {
                     "status": self.status.SUCCESS,
                     "message": f"Model server started and ready (reset={reset})",
                     "pid": self.process.pid,
-                    "port": self.config.port,
+                    "port": self.config.other_kwargs.port,
                     "command": " ".join(args)
                 }
             else:
@@ -631,7 +631,7 @@ class ModelServer:
                         "message": error_msg,
                         "details": {
                             "pid": self.process.pid,
-                            "port": self.config.port,
+                            "port": self.config.other_kwargs.port,
                             "log_file": str(log_path),
                             "hint": "Model may still be loading. Check llama-server log file or try again later."
                         }
@@ -826,14 +826,14 @@ class ModelServer:
                     self.logger.error(f"Error checking prefix_tree.bin: {e}")
             else:
                 # Fallback: find and kill process by port (for reload scenarios)
-                self.logger.info(f"Process reference lost, finding process by port {self.config.port}")
+                self.logger.info(f"Process reference lost, finding process by port {self.config.other_kwargs.port}")
                 killed = False
 
                 for proc in psutil.process_iter(['pid', 'name', 'connections']):
                     try:
                         if proc.info['name'] and 'llama-server' in proc.info['name'].lower():
                             for conn in proc.connections():
-                                if conn.laddr.port == self.config.port:
+                                if conn.laddr.port == self.config.other_kwargs.port:
                                     self.logger.info(f"Found server process: PID {proc.pid}")
                                     proc.terminate()
                                     try:
@@ -848,7 +848,7 @@ class ModelServer:
                 if not killed:
                     return {
                         "status": self.status.ERROR,
-                        "message": f"Could not find server process on port {self.config.port}"
+                        "message": f"Could not find server process on port {self.config.other_kwargs.port}"
                     }
 
             model_log_service.append_log("✅ Server stopped successfully")
@@ -886,7 +886,7 @@ class ModelServer:
                 "status": self.status.RUNNING,
                 "message": "Server is running",
                 "pid": self.process.pid,
-                "port": self.config.port,
+                "port": self.config.other_kwargs.port,
                 "memory_usage": process.memory_info().rss,
                 "cpu_percent": process.cpu_percent(),
                 "create_time": process.create_time()
