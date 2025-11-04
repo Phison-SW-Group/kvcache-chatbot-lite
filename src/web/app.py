@@ -898,7 +898,7 @@ class ChatbotWeb:
 
         # Initial loading message
         loading_status = f"🔄 Starting model: {selected_model}..."
-        loading_log = f"🔄 Starting model server with: {selected_model}\n⏳ This may take 30-90 seconds while the model loads...\n"
+        loading_log = f"🔄 Starting model server with: {selected_model}\n⏳ This may take 30-90 seconds while the model loads... (900 seconds for force kill...)\n"
         yield loading_status, loading_log, gr.Dropdown(choices=self.get_document_choices(), value="None"), gr.Dropdown(choices=self.get_model_choices())
 
         try:

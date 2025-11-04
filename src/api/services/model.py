@@ -436,7 +436,7 @@ class ModelServer:
             self.logger.debug(f"Completion check error: {e}")
             return False
 
-    def _wait_until_ready(self, timeout_seconds: int = 90) -> bool:
+    def _wait_until_ready(self, timeout_seconds: int = 900) -> bool:
         """Poll the chat/completions endpoint until it is ready or timeout."""
         start = time.time()
         # Poll every 0.5 seconds as requested
@@ -600,7 +600,7 @@ class ModelServer:
             self.logger.info("Server process started, waiting for model to load...")
             model_log_service.append_log("Waiting for model to load...")
 
-            if self._wait_until_ready(timeout_seconds=90):
+            if self._wait_until_ready(timeout_seconds=900):
                 model_log_service.append_log(f"✅ Model server started and ready (PID={self.process.pid}, Port={self.config.port})")
                 return {
                     "status": self.status.SUCCESS,
