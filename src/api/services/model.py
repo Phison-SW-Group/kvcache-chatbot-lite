@@ -42,16 +42,16 @@ class ModelServerConfig:
     offload_path: str
     log_path: str
     alias: Optional[str] = None
-    seed: Optional[int] = 0
-    port: int = 13141
-    host: str = "0.0.0.0"
-    ctx_size: int = 16384
-    main_gpu: int = 0
-    parallel: int = 1
-    n_gpu_layers: int = 100
-    log_verbosity: int = 9
-    ssd_kv_offload_gb: int = 100
-    dram_kv_offload_gb: int = 0
+    # seed: Optional[int] = 0
+    # port: int = 13141
+    # host: str = "0.0.0.0"
+    # ctx_size: int = 16384
+    # main_gpu: int = 0
+    # parallel: int = 1
+    # n_gpu_layers: int = 100
+    # log_verbosity: int = 9
+    # ssd_kv_offload_gb: int = 100
+    # dram_kv_offload_gb: int = 0
     other_kwargs: ServingParamsSettings = field(default_factory=ServingParamsSettings)
 
     @classmethod
@@ -97,19 +97,19 @@ class ModelServerConfig:
             str(self.exe),
             "--model", str(self.model_path),
             "--alias", str(self.alias),
-            "--escape",
-            "--seed", str(self.seed),
-            "--host", self.host,
-            "--ctx-size", str(self.ctx_size),
-            "--main-gpu", str(self.main_gpu),
             "--offload-path", str(self.offload_path),
-            "--parallel", str(self.parallel),
+            "--escape",
             "--no-context-shift",
-            "--port", str(self.port),
-            "--n-gpu-layers", str(self.n_gpu_layers),
-            "--log-verbosity", str(self.log_verbosity),
-            "--ssd-kv-offload-gb", str(self.ssd_kv_offload_gb),
-            "--dram-kv-offload-gb", str(self.dram_kv_offload_gb),
+            # "--seed", str(self.seed),
+            # "--host", self.host,
+            # "--port", str(self.port),
+            # "--ctx-size", str(self.ctx_size),
+            # "--main-gpu", str(self.main_gpu),
+            # "--parallel", str(self.parallel),
+            # "--n-gpu-layers", str(self.n_gpu_layers),
+            # "--log-verbosity", str(self.log_verbosity),
+            # "--ssd-kv-offload-gb", str(self.ssd_kv_offload_gb),
+            # "--dram-kv-offload-gb", str(self.dram_kv_offload_gb),
             "--kv-cache-resume-policy", "0" if reset else "1",
         ]
 

@@ -91,6 +91,17 @@ class CompletionParamsSettings(BaseSettings):
 
 class ServingParamsSettings(BaseSettings):
     """Serving parameters for llamacpp model deployment"""
+    seed: Optional[int] = 0
+    port: int = 13141
+    host: str = "0.0.0.0"
+    ctx_size: int = 16384
+    main_gpu: int = 0
+    parallel: int = 1
+    n_gpu_layers: int = 100
+    log_verbosity: int = 9
+    ssd_kv_offload_gb: int = 100
+    dram_kv_offload_gb: int = 0
+
     # # Reasoning and template settings
     # reasoning_format: Optional[str] = None  # e.g., "deepseek"
     # use_jinja: bool = False
