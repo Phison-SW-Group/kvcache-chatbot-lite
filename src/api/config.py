@@ -61,6 +61,87 @@ class CompletionParamsSettings(BaseSettings):
         extra='allow',
     )
 
+    def __init__(self, *args, **kwargs):
+        """Initialize CompletionParamsSettings, separating valid fields from custom parameters"""
+        # Handle custom parameters
+        valid_fields = set(self.model_fields.keys())
+        completion_kwargs = {}
+        custom_params = {}
+
+        # Extract custom_params if already provided
+        if 'custom_params' in kwargs:
+            custom_params = kwargs.pop('custom_params', {})
+            if not isinstance(custom_params, dict):
+                custom_params = {}
+
+        # Separate valid fields from custom parameters
+        for key, value in list(kwargs.items()):
+            if key in valid_fields:
+                completion_kwargs[key] = value
+            else:
+                custom_params[key] = value
+
+        # Add custom_params back if there are any
+        if custom_params:
+            completion_kwargs['custom_params'] = custom_params
+
+        # Call parent __init__ with processed kwargs
+        super().__init__(*args, **completion_kwargs)
+
+
+class ServingParamsSettings(BaseSettings):
+    """Serving parameters for llamacpp model deployment"""
+    # Reasoning and template settings
+    reasoning_format: Optional[str] = None  # e.g., "deepseek"
+    use_jinja: bool = False
+
+    # Batch and context settings
+    n_ubatch: int = 512
+    n_batch: int = 512
+    n_parallel: int = 1
+    n_ctx: int = 2048
+
+    # Generation parameters (for llamacpp serving)
+    temp: float = 0.8
+    top_p: float = 0.95
+    top_k: int = 40
+    min_p: float = 0.05
+
+    # Custom parameters for additional llamacpp serving args
+    custom_params: Dict[str, Any] = Field(default_factory=dict)
+
+    model_config = SettingsConfigDict(
+        case_sensitive=True,
+        extra='allow',
+    )
+
+    def __init__(self, *args, **kwargs):
+        """Initialize ServingParamsSettings, separating valid fields from custom parameters"""
+        # Handle custom parameters
+        valid_fields = set(self.model_fields.keys())
+        serving_kwargs = {}
+        custom_params = {}
+
+        # Extract custom_params if already provided
+        if 'custom_params' in kwargs:
+            custom_params = kwargs.pop('custom_params', {})
+            if not isinstance(custom_params, dict):
+                custom_params = {}
+
+        # Separate valid fields from custom parameters
+        for key, value in list(kwargs.items()):
+            if key in valid_fields:
+                serving_kwargs[key] = value
+            else:
+                custom_params[key] = value
+
+        # Add custom_params back if there are any
+        if custom_params:
+            serving_kwargs['custom_params'] = custom_params
+
+        # Call parent __init__ with processed kwargs
+        super().__init__(*args, **serving_kwargs)
+
 
 class LocalModelSettings(BaseSettings):
     """Local model configuration for self-hosted models"""
@@ -71,6 +152,9 @@ class LocalModelSettings(BaseSettings):
 
     # Completion parameters for this model
     completion_params: CompletionParamsSettings = Field(default_factory=CompletionParamsSettings)
+
+    # Serving parameters for llamacpp deployment (optional)
+    serving_params: Optional[ServingParamsSettings] = None
 
     model_config = SettingsConfigDict(
         env_prefix="LOCAL_MODEL_",
@@ -124,6 +208,9 @@ class ModelSettings(BaseSettings):
     # Completion parameters for this model
     completion_params: CompletionParamsSettings = Field(default_factory=CompletionParamsSettings)
 
+    # Serving parameters for llamacpp deployment (only for local models, optional)
+    serving_params: Optional[ServingParamsSettings] = None
+
     model_config = SettingsConfigDict(
         env_prefix="MODEL_",
         case_sensitive=True,
@@ -137,7 +224,6 @@ class ModelSettings(BaseSettings):
         # Convert None api_key to "empty"
         if self.api_key is None:
             self.api_key = "empty"
-
 
 
 class APISettings(BaseSettings):
@@ -270,25 +356,17 @@ class Settings(BaseSettings):
     def _create_model_settings(self, model_data: dict, model_type: str) -> ModelSettings:
         """Create ModelSettings from YAML data"""
         # Load completion params for this model
+        # CompletionParamsSettings.__init__ will automatically handle custom_params separation
         completion_params_data = model_data.get('completion_params', {})
+        completion_params = CompletionParamsSettings(**completion_params_data)
 
-        # Handle custom parameters
-        completion_kwargs = {}
-        custom_params = {}
-
-        # Get valid field names from CompletionParamsSettings
-        valid_fields = set(CompletionParamsSettings.model_fields.keys())
-
-        for key, value in completion_params_data.items():
-            if key in valid_fields:
-                completion_kwargs[key] = value
-            else:
-                custom_params[key] = value
-
-        if custom_params:
-            completion_kwargs['custom_params'] = custom_params
-
-        completion_params = CompletionParamsSettings(**completion_kwargs)
+        # Load serving params for local models (optional)
+        serving_params = None
+        if model_type == "local":
+            serving_params_data = model_data.get('serving_params')
+            if serving_params_data:
+                # ServingParamsSettings.__init__ will automatically handle custom_params separation
+                serving_params = ServingParamsSettings(**serving_params_data)
 
         # Create model settings based on type
         if model_type == "local":
@@ -299,7 +377,8 @@ class Settings(BaseSettings):
                 model_type="local",
                 base_url=model_data.get('base_url'),  # Support base_url for local models
                 api_key=model_data.get('api_key', "not-needed"),  # Support api_key for local models
-                completion_params=completion_params
+                completion_params=completion_params,
+                serving_params=serving_params
             )
         else:  # remote
             return ModelSettings(
