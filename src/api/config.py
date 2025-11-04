@@ -91,21 +91,21 @@ class CompletionParamsSettings(BaseSettings):
 
 class ServingParamsSettings(BaseSettings):
     """Serving parameters for llamacpp model deployment"""
-    # Reasoning and template settings
-    reasoning_format: Optional[str] = None  # e.g., "deepseek"
-    use_jinja: bool = False
+    # # Reasoning and template settings
+    # reasoning_format: Optional[str] = None  # e.g., "deepseek"
+    # use_jinja: bool = False
 
-    # Batch and context settings
-    n_ubatch: int = 512
-    n_batch: int = 512
-    n_parallel: int = 1
-    n_ctx: int = 2048
+    # # Batch and context settings
+    # n_ubatch: int = 512
+    # n_batch: int = 512
+    # n_parallel: int = 1
+    # n_ctx: int = 2048
 
-    # Generation parameters (for llamacpp serving)
-    temp: float = 0.8
-    top_p: float = 0.95
-    top_k: int = 40
-    min_p: float = 0.05
+    # # Generation parameters (for llamacpp serving)
+    # temp: float = 0.8
+    # top_p: float = 0.95
+    # top_k: int = 40
+    # min_p: float = 0.05
 
     # Custom parameters for additional llamacpp serving args
     custom_params: Dict[str, Any] = Field(default_factory=dict)

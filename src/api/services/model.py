@@ -11,16 +11,16 @@ import psutil
 import threading
 import asyncio
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
 import logging
 import urllib.request
 import urllib.error
 
-from config import settings
+from config import settings, ServingParamsSettings
 
 
-# llama-server creates this subdirectory under cache_path
+# llama-server creates this subdirectory under offload_path
 MAESTRO_CACHE_SUBDIR = "maestro_phison"
 
 
@@ -39,16 +39,20 @@ class ModelServerConfig:
     """Configuration for model server"""
     exe: str
     model_path: str
-    cache_path: str
+    offload_path: str
     log_path: str
     alias: Optional[str] = None
+    seed: Optional[int] = 0
     port: int = 13141
     host: str = "0.0.0.0"
-    context_size: int = 16384
-    offload_gb: int = 100
-    dram_offload_gb: int = 0
-    ngl: int = 100
-    log_level: int = 9
+    ctx_size: int = 16384
+    main_gpu: int = 0
+    parallel: int = 1
+    n_gpu_layers: int = 100
+    log_verbosity: int = 9
+    ssd_kv_offload_gb: int = 100
+    dram_kv_offload_gb: int = 0
+    other_kwargs: ServingParamsSettings = field(default_factory=ServingParamsSettings)
 
     @classmethod
     def from_settings(cls, serving_name: Optional[str] = None):
@@ -80,11 +84,71 @@ class ModelServerConfig:
 
         return cls(
             exe=settings.server.exe_path or "",
-            cache_path=settings.server.cache_dir or "",
+            offload_path=settings.server.cache_dir or "",
             log_path=settings.server.log_path or "",
             model_path=selected_model.model_name_or_path or "",
             alias=selected_model.serving_name or "",
+            other_kwargs=selected_model.serving_params or ServingParamsSettings(),
         )
+
+    def get_args(self, reset: bool = True) -> list:
+        """Build server command arguments"""
+        args = [
+            str(self.exe),
+            "--model", str(self.model_path),
+            "--alias", str(self.alias),
+            "--escape",
+            "--seed", str(self.seed),
+            "--host", self.host,
+            "--ctx-size", str(self.ctx_size),
+            "--main-gpu", str(self.main_gpu),
+            "--offload-path", str(self.offload_path),
+            "--parallel", str(self.parallel),
+            "--no-context-shift",
+            "--port", str(self.port),
+            "--n-gpu-layers", str(self.n_gpu_layers),
+            "--log-verbosity", str(self.log_verbosity),
+            "--ssd-kv-offload-gb", str(self.ssd_kv_offload_gb),
+            "--dram-kv-offload-gb", str(self.dram_kv_offload_gb),
+            "--kv-cache-resume-policy", "0" if reset else "1",
+        ]
+
+        # Automatically adapt other_kwargs attributes to command line arguments
+        if self.other_kwargs:
+
+            # Get all fields from ServingParamsSettings
+            for field_name, field_value in self.other_kwargs.model_dump(exclude_none=True).items():
+                # Skip custom_params dict itself, we'll flatten its contents below
+                # (we want --flash-attn, not --custom-params {"flash_attn": true})
+                if field_name == "custom_params":
+                    continue
+
+                # Convert field name: replace _ with -
+                arg_name = field_name.replace("_", "-")
+
+                # Handle different types
+                if isinstance(field_value, bool):
+                    # For bool: only add flag if True
+                    if field_value:
+                        args.append(f"--{arg_name}")
+                else:
+                    # For other types: add --key value
+                    args.extend([f"--{arg_name}", str(field_value)])
+
+            # Flatten custom_params: extract each key-value as individual args
+            # e.g., custom_params={"flash_attn": true} becomes --flash-attn
+            if hasattr(self.other_kwargs, "custom_params") and self.other_kwargs.custom_params:
+                for key, value in self.other_kwargs.custom_params.items():
+                    # Convert key name: replace _ with -
+                    arg_name = key.replace("_", "-")
+
+                    if isinstance(value, bool):
+                        if value:
+                            args.append(f"--{arg_name}")
+                    else:
+                        args.extend([f"--{arg_name}", str(value)])
+
+        return args
 
 
 class ModelServer:
@@ -192,8 +256,8 @@ class ModelServer:
                     details["model_readable"] = True
 
         # Check cache path
-        if self.config.cache_path:
-            cache_path = Path(self.config.cache_path)
+        if self.config.offload_path:
+            cache_path = Path(self.config.offload_path)
             details["cache_path"] = str(cache_path)
             if not cache_path.exists():
                 try:
@@ -233,27 +297,6 @@ class ModelServer:
                 "details": details
             }
 
-    def _get_server_args(self, reset: bool = True) -> list:
-        """Build server command arguments"""
-        args = [
-            str(self.config.exe),
-            "-m", str(self.config.model_path),
-            "-a", str(self.config.alias),
-            "-e", "-s", "0",
-            "--host", self.config.host,
-            "-c", str(self.config.context_size),
-            "-mg", "0",
-            "--offload-path", str(self.config.cache_path),
-            "--ssd-kv-offload-gb", str(self.config.offload_gb),
-            "--parallel", "1",
-            "--no-context-shift",
-            "--kv-cache-resume-policy", "0" if reset else "1",
-            "--port", str(self.config.port),
-            "--dram-kv-offload-gb", str(self.config.dram_offload_gb),
-            "-ngl", str(self.config.ngl),
-            "-lv", str(self.config.log_level)
-        ]
-        return args
 
     def _is_running(self) -> bool:
         """Check if server process is running"""
@@ -470,7 +513,7 @@ class ModelServer:
             # Prepare command - using Path normalization like start_llama_non_reuse.py
             exe_path = Path(self.config.exe)
             model_path = Path(self.config.model_path)
-            cache_path = Path(self.config.cache_path)
+            cache_path = Path(self.config.offload_path)
             log_path = Path(self.config.log_path)
 
             # Ensure cache and log directories exist
@@ -483,7 +526,7 @@ class ModelServer:
             except Exception:
                 pass
 
-            args = self._get_server_args(reset)
+            args = self.config.get_args(reset)
             working_dir = exe_path.parent
 
             self.logger.info(f"Starting server with args: {' '.join(args)}")
@@ -746,7 +789,7 @@ class ModelServer:
 
                 # Check if prefix_tree.bin was created
                 try:
-                    cache_path = Path(self.config.cache_path)
+                    cache_path = Path(self.config.offload_path)
                     resume_policy_mode = "reset (0)" if self.last_reset_mode else "resume (1)"
                     model_log_service.append_log(f"Checking for prefix_tree.bin (startup mode was: {resume_policy_mode})...")
 
