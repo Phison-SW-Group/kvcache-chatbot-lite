@@ -5,10 +5,12 @@ A modern multi-turn conversation chatbot with document upload support and KV cac
 ## ✨ Key Features
 
 - 💬 **Multi-turn Conversations**: Maintains conversation history for context-aware responses
-- 📄 **Document Management**: Upload and select documents independently from chat sessions
+- 📄 **Document Management**: Upload and select documents independently from chat sessions with PDF support
 - ⚡ **Streaming Responses**: Real-time streaming for better user experience
-- 🚀 **KV Cache Integration**: Optimized document processing with pre-caching
-- 🔧 **Model Management**: Start/stop local model servers with cache control
+- 🚀 **KV Cache Integration**: Optimized document processing with pre-caching for local models
+- 🔧 **Flexible Model Management**: Support for both local and remote models with dynamic switching
+- 🧠 **Reasoning Models Support**: Enhanced configuration for reasoning models (e.g., GPT-OSS-20B) with extended timeouts
+- 🎨 **Configurable Prompts**: Customizable prompt templates for fine-tuned control over conversation and RAG contexts
 - 🔌 **Clean Architecture**: RESTful API with frontend-backend separation
 
 ## 🚀 Quick Start
@@ -23,30 +25,76 @@ A modern multi-turn conversation chatbot with document upload support and KV cac
 **Option A: Using Make (Recommended)**
 ```bash
 git clone <repository-url>
-cd chatbot-for-kvcache-demo
+cd kvcache_chatbot
 make start
 ```
 
 **Option B: Using npm**
 ```bash
 git clone <repository-url>
-cd chatbot-for-kvcache-demo
+cd kvcache_chatbot
 npm start
 ```
 
-**Option C: Manual setup**
+**Option C: Manual Setup (Recommended for First-Time Setup)**
+
+#### ⚙️ 1. Setup Configuration
 ```bash
-git clone <repository-url>
-cd chatbot-for-kvcache-demo
-uv sync  # or pip install dependencies
-# Terminal 1: cd src/api && python main.py
-# Terminal 2: cd src/web && python app.py --backend-port 8000
+cd src/api
+cp env.example.yaml env.yaml
+```
+Overwrite or modify `env.yaml` with this [configuration](https://hackmd.io/@kenyo3023/SJJ11_dk-e)
+
+---
+
+#### 🛠️ 2. Start Service
+
+##### 👁️ For better viewing experience, you can execute the frontend and backend separately
+
+**Install Backend**
+```bash
+pip install -r src/api/requirements.txt
+```
+
+**Execute Backend**
+```bash
+cd src/api && python main.py --port 3023
+# Use 'cd src/api && python main.py --help' to view the available options
+```
+Then view the **backend API docs** in browser through `http://localhost:3023/docs`
+
+**Install Frontend**
+```bash
+pip install -r src/web/requirements.txt
+```
+
+**Execute Frontend**
+```bash
+cd src/web && python app.py --backend-port 3023
+# Use 'cd src/web && python app.py --help' to view the available options
+```
+Then view the **frontend website** in browser through `http://localhost:7860`
+
+> **Important**: The backend `--port` and frontend `--backend-port` must be aligned
+
+##### 🔍 Monitor Model Deployment Progress
+
+**Monitor Progress** (Windows)
+```powershell
+netstat -ano | findstr :13141  # This is the default model deployment port
+# Command template: netstat -ano | findstr :{MODEL_DEPLOY_PORT:-13141}
+```
+
+**Monitor Progress** (Linux/macOS)
+```bash
+lsof -i :13141  # This is the default model deployment port
+# Command template: lsof -i :{MODEL_DEPLOY_PORT:-13141}
 ```
 
 ### Access the Application
 - **Frontend**: http://localhost:7860
-- **Backend API**: http://localhost:8000
-- **API Documentation**: http://localhost:8000/docs
+- **Backend API**: http://localhost:3023 (default, customizable via `--port`)
+- **API Documentation**: http://localhost:3023/docs
 
 ## 📚 Documentation
 
@@ -64,33 +112,132 @@ For system architecture, data flow, and technical details:
 
 ## 🎮 Basic Usage
 
-1. **Upload Documents**: Use the left sidebar to upload `.txt` files
-2. **Select Document**: Choose from dropdown to use document context
-3. **Chat**: Type messages and get responses with document context
-4. **Cache Optimization**: Use "Cache" button for faster document processing
-5. **Model Management**: Start/stop model servers from the interface
+1. **Configure Models**: Set up your models in `src/api/env.yaml` (local and/or remote)
+2. **Select Model**: Choose from the model dropdown (shows type indicators)
+3. **Start Local Models**: Click "Start with Reset" or "Start without Reset" for local models (remote models are ready immediately)
+4. **Upload Documents**: Use the left sidebar to upload `.pdf` files
+5. **Select Document**: Choose from dropdown to use document context
+6. **Cache Documents**: Use "Cache" button for faster document processing (KV cache for local models)
+7. **Chat**: Type messages and get responses with document context and streaming
 
 ## 🔧 Configuration
 
-### LLM Configuration (Optional)
-Create a `.env` file in `src/api/`:
-```env
-LLM_MODEL=gpt-3.5-turbo
-LLM_API_KEY=your-api-key-here
-LLM_BASE_URL=
-LLM_TEMPERATURE=0.7
-LLM_MAX_TOKENS=2000
+### Configuration File Setup
+
+Create `env.yaml` in `src/api/` directory (copy from `env.example.yaml`):
+
+```bash
+cd src/api
+cp env.example.yaml env.yaml
 ```
 
-### Model Server Configuration
-```env
-LLM_SERVER_EXE=path/to/your/model/server
-LLM_SERVER_MODEL_NAME_OR_PATH=path/to/model
-LLM_SERVER_CACHE=path/to/cache/directory
-LLM_SERVER_LOG=path/to/log/directory
+### YAML Configuration Structure
+
+The system uses YAML format for flexible model and server configuration:
+
+```yaml
+server:
+    exe_path: C:\path\to\llama-server.exe
+    log_path: C:\path\to\logs\maestro_llama.log
+    cache_dir: R:\
+
+models:
+    # Local models (self-hosted)
+    local_models:
+      - model_name_or_path: /path/to/model.gguf
+        serving_name: my-local-model
+        tokenizer: meta-llama/Llama-3.1-8B-Instruct
+        base_url: http://localhost:13141/v1
+        api_key: not-needed
+        completion_params:
+            temperature: 0.7
+            max_tokens: 2000
+        # Optional: Serving parameters for model server
+        serving_params:
+            ctx_size: 16384
+            n_gpu_layers: 100
+            timeout: 900  # Extended timeout for reasoning models
+
+      # GPT-OSS-20B Reasoning Model - Recommended Configuration
+      - model_name_or_path: /path/to/gpt-oss-20b-GGUF.gguf
+        serving_name: ggml-org/gpt-oss-20b-GGUF
+        tokenizer: openai/gpt-oss-20b
+        base_url: http://localhost:13141/v1
+        api_key: not-needed
+        completion_params:
+            temperature: 0.0
+            max_tokens: 20000
+            # Recommended completion parameters for GPT-OSS-20B reasoning model
+            repeat_penalty: 1.1
+            repeat_last_n: 64
+            chat_template_kwargs:
+                reasoning_effort: low
+        serving_params: # Llamacpp serving args
+            log_file: /path/to/logging.log
+            # Recommended serving parameters for GPT-OSS-20B reasoning model
+            # More details can visit https://llama-cpp-python.readthedocs.io/en/latest/api-reference/
+            ctx_size: 131072
+            reasoning_format: deepseek
+            jinja: True
+            swa_full: True
+
+  # Remote models (APIs, other machines)
+  remote_models:
+        # OpenAI
+      - provider: openai
+        model: gpt-4o-mini
+        serving_name: gpt-4o-mini
+        base_url: https://api.openai.com/v1
+        api_key: YOUR_OPENAI_API_KEY
+        completion_params:
+            temperature: 0.7
+            max_tokens: 4000
+
+        # Google Gemini (OpenAI-compatible)
+      - provider: openai
+        model: gemini-2.0-flash
+        serving_name: gemini-2.0-flash
+        base_url: https://generativelanguage.googleapis.com/v1beta/openai/
+        api_key: YOUR_GOOGLE_GEMINI_API_KEY
+        completion_params:
+            temperature: 0.5
+            max_tokens: 8000
+
+# Optional: Custom prompt templates
+prompts:
+  system_prompt_template: |
+    ### Task:
+    Respond to the user query using the provided context.
+
+    ### Guidelines:
+    - If you don't know the answer, clearly state that.
+    - Respond in the same language as the user's query.
+
+    ### Output:
+    Provide a clear and direct response.
+
+    <context>
+    {doc_context}
+    </context>
+
+  user_prompt_template: |
+    <user_query>
+    {user_query}
+    </user_query>
+
+# Optional: Document processing settings
+documents:
+  upload_dir: uploads
+  max_file_size: 52428800  # 50MB
+  allowed_extensions: [".pdf"]
+  chunk_size: 10000
+  chunk_overlap: 200
 ```
 
-**Note**: Without API configuration, the system uses mock responses for testing.
+**Note**:
+- For detailed configuration examples, see [env.example.yaml](src/api/env.example.yaml)
+- Remote models are ready immediately, local models require starting the server
+- Extended timeout (900s) recommended for reasoning models like GPT-OSS-20B
 
 ## 🛠️ Development
 
@@ -140,10 +287,12 @@ make clean          # Clean logs and uploads
 - `DELETE /api/v1/session/{session_id}` - Delete session
 
 ### Model Management
-- `POST /api/v1/model/up/reset` - Start model with reset
-- `POST /api/v1/model/up/without_reset` - Start model without reset
-- `POST /api/v1/model/down` - Stop model
-- `GET /api/v1/model/status` - Get model status
+- `GET /api/v1/model/list` - List all models (local and remote) with type information
+- `POST /api/v1/model/switch` - Switch to a different model
+- `POST /api/v1/model/up/reset` - Start local model with reset
+- `POST /api/v1/model/up/without_reset` - Start local model without reset
+- `POST /api/v1/model/down` - Stop local model
+- `GET /api/v1/model/status` - Get current model status
 
 ## 🚨 Troubleshooting
 
@@ -165,7 +314,8 @@ npm test
 - FastAPI - Modern Python web framework
 - Pydantic - Data validation and serialization
 - Uvicorn - ASGI server
-- httpx - Async HTTP client
+- httpx - Async HTTP client for full API parameter support
+- PyYAML - YAML configuration parsing
 
 **Frontend:**
 - Gradio - ML/AI web interface framework
@@ -190,3 +340,5 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - **[GETTING_STARTED.md](docs/GETTING_STARTED.md)** - Installation and setup
 - **[QUICK_START.md](docs/QUICK_START.md)** - Usage guide and workflows
 - **[ARCHITECTURE.md](docs/ARCHITECTURE.md)** - System architecture overview
+- **[LOCAL_REMOTE_MODELS.md](docs/LOCAL_REMOTE_MODELS.md)** - Local and remote models configuration
+- **[DOCUMENT_AND_RAG.md](docs/DOCUMENT_AND_RAG.md)** - Document processing and RAG implementation
