@@ -114,20 +114,59 @@ This appears in:
 4. Restart model to fix
 ```
 
+## System Prompt Template Alignment
+
+### Critical Fix: Prefix Matching Optimization
+
+To ensure KV Cache prefix matching works correctly, the cache operation now formats document content using the same `system_prompt_template` as actual chat requests.
+
+#### Before (Broken):
+**Cache operation:**
+```python
+messages = [{"role": "system", "content": "raw document content..."}]
+```
+
+**Actual chat:**
+```python
+messages = [{"role": "system", "content": "### Task:\n...\n<context>\nraw document content...\n</context>"}]
+```
+
+❌ **Result**: Prefix mismatch → No KV Cache acceleration
+
+#### After (Fixed):
+**Both cache and chat now use:**
+```python
+formatted_content = settings.prompts.system_prompt_template.format(
+    doc_context=content
+)
+messages = [{"role": "system", "content": formatted_content}]
+```
+
+✅ **Result**: Prefix match → Full KV Cache acceleration
+
+### Benefits
+
+1. **Cache Efficiency**: Prefix matching works as intended
+2. **Performance**: Subsequent queries benefit from cached KV states
+3. **Consistency**: Cache and chat use identical message formatting
+4. **Correctness**: System prompt instructions are included in cache
+
 ## Code Changes
 
 Modified files:
 - `src/api/routers/document.py`:
-  - `cache_document()` - Added validation
-  - `upload_document_and_cache()` - Added validation
-  - `cache_single_group()` - Added validation
-  - `cache_all_document_groups()` - Added validation
+  - `_cache_content_in_kv()` - **Added system_prompt_template formatting** (Critical fix)
+  - `cache_document()` - Added model validation
+  - `upload_document_and_cache()` - Added model validation
+  - `cache_single_group()` - Added model validation
+  - `cache_all_document_groups()` - Added model validation
 
 All cache functions now:
 1. Check `model_server._is_running()`
 2. Compare `llm_service.get_current_config()['model']` vs `model_server.config.alias`
-3. Log model configuration details
-4. Raise HTTP 503 if mismatch
+3. **Format content using `system_prompt_template` for prefix matching**
+4. Log model configuration details
+5. Raise HTTP 503 if mismatch
 
 ## Future Enhancements
 

@@ -92,10 +92,15 @@ async def _cache_content_in_kv(content: str, description: str = "content") -> No
     model_log_service.append_log(f"Model base_url: {current_config['base_url']}")
 
     # Step 4: Prepare messages and run inference
+    # Format content using system_prompt_template to match actual chat format
+    formatted_content = settings.prompts.system_prompt_template.format(
+        doc_context=content
+    )
+
     messages = [
         {
             "role": "system",
-            "content": content
+            "content": formatted_content
         }
     ]
 
