@@ -91,10 +91,14 @@ def _prepare_document_context(request: MessageRequest):
             best_match = results[0]
             print(f"🔍 RAG: Retrieved chunk {best_match.matched_chunk_id} in group '{best_match.group_id}' with similarity {best_match.similarity_score:.4f}")
 
+            # Format document context using template
+            formatted_content = settings.prompts.system_prompt_template.format(
+                doc_context=best_match.content
+            )
+
             context = {
                 "role": "system",
-                # Group content goes to LLM for full context
-                "content": f"{best_match.content}\n\nRelevant to the document context above"
+                "content": formatted_content
             }
 
             rag_info = {
@@ -115,9 +119,14 @@ def _prepare_document_context(request: MessageRequest):
 
     # Fallback to full document content (legacy behavior or when RAG disabled)
     if doc.full_text:
+        # Format document context using template
+        formatted_content = settings.prompts.system_prompt_template.format(
+            doc_context=doc.full_text
+        )
+
         context = {
             "role": "system",
-            "content": doc.full_text
+            "content": formatted_content
         }
         return context, {"method": "full_document", "filename": doc.filename}
 
@@ -172,8 +181,13 @@ async def send_message(session_id: str, request: MessageRequest):
     # Get or create session
     session = session_manager.get_or_create_session(session_id)
 
-    # Add user message to history
-    session.add_message("user", request.message)
+    # Format user message using template before adding to history
+    formatted_message = settings.prompts.user_prompt_template.format(
+        user_query=request.message
+    )
+
+    # Add formatted user message to history
+    session.add_message("user", formatted_message)
 
     # Reconfigure LLM on demand if serving_name is provided
     if request.serving_name:
@@ -218,8 +232,13 @@ async def stream_message(session_id: str, request: MessageRequest):
     # Get or create session
     session = session_manager.get_or_create_session(session_id)
 
-    # Add user message to history
-    session.add_message("user", request.message)
+    # Format user message using template before adding to history
+    formatted_message = settings.prompts.user_prompt_template.format(
+        user_query=request.message
+    )
+
+    # Add formatted user message to history
+    session.add_message("user", formatted_message)
 
     # Prepare messages for LLM
     messages = session.get_messages_for_llm()

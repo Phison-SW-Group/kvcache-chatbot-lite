@@ -282,6 +282,32 @@ class DocumentSettings(BaseSettings):
     )
 
 
+class PromptsSettings(BaseSettings):
+    """Prompt template settings for RAG and document context"""
+    system_prompt_template: str = """### Task:
+Respond to the user query using the provided context.
+
+### Guidelines:
+- If you don't know the answer, clearly state that.
+- Respond in the same language as the user's query.
+
+### Output:
+Provide a clear and direct response to the user's query.
+
+<context>
+{doc_context}
+</context>"""
+
+    user_prompt_template: str = """<user_query>
+{user_query}
+</user_query>"""
+
+    model_config = SettingsConfigDict(
+        env_prefix="PROMPTS_",
+        case_sensitive=True,
+    )
+
+
 class Settings(BaseSettings):
     """Main application settings with nested configuration"""
 
@@ -295,6 +321,7 @@ class Settings(BaseSettings):
     all_models: List[ModelSettings] = Field(default_factory=list)
 
     documents: DocumentSettings = Field(default_factory=DocumentSettings)
+    prompts: PromptsSettings = Field(default_factory=PromptsSettings)
 
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).parent / ".env"),
@@ -358,6 +385,13 @@ class Settings(BaseSettings):
                         self.models['legacy'].append(model_settings)
                         self.all_models.append(model_settings)
 
+            # Load prompts settings
+            if 'prompts' in yaml_data:
+                prompts_data = yaml_data['prompts']
+                self.prompts = PromptsSettings(
+                    system_prompt_template=prompts_data.get('system_prompt_template', self.prompts.system_prompt_template),
+                    user_prompt_template=prompts_data.get('user_prompt_template', self.prompts.user_prompt_template)
+                )
 
             print("✅ YAML configuration loaded successfully")
 
