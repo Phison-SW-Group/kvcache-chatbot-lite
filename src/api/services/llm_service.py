@@ -3,6 +3,8 @@ LLM service for generating chat responses
 Supports OpenAI compatible APIs
 """
 from typing import AsyncGenerator, List, Dict, Optional
+import httpx
+import json
 
 
 class LLMService:
@@ -22,15 +24,6 @@ class LLMService:
         self.api_key = api_key
         self.base_url = base_url
         self.completion_params = completion_params  # Store all completion parameters
-        # Don't create client here - create dynamically on each call to support model switching
-
-    def _get_client(self):
-        """Get or create OpenAI client with current configuration"""
-        from openai import AsyncOpenAI
-        return AsyncOpenAI(
-            api_key=self.api_key,
-            base_url=self.base_url
-        )
 
     def reconfigure(
         self,
@@ -116,51 +109,97 @@ class LLMService:
         messages: List[Dict[str, str]],
         stream: bool = True
     ) -> AsyncGenerator[str, None]:
-        """Generate response using OpenAI compatible API"""
+        """Generate response using OpenAI compatible API with httpx for full parameter support"""
         try:
             from services.model_log import model_log_service
-
-            # Get client with current configuration (supports dynamic model switching)
-            client = self._get_client()
 
             # Log API request
             user_message = messages[-1]['content'] if messages else ""
             model_log_service.append_log(f"API Request - Model: {self.model}, Messages: {len(messages)}, Stream: {stream}")
             model_log_service.append_log(f"User message: {user_message[:100]}..." if len(user_message) > 100 else f"User message: {user_message}")
 
-            # Prepare API call parameters
+            # Prepare API call parameters (supports all custom parameters)
             api_params = {
                 "model": self.model,
                 "messages": messages,
                 "stream": stream,
-                **self.completion_params  # Include all completion parameters
+                **self.completion_params  # Include ALL completion parameters (repeat_penalty, top_k, chat_template_kwargs, etc.)
             }
 
-            print(self.base_url)
-            print(self.api_key)
-            print(api_params)
+            # Build request URL
+            url = f"{self.base_url.rstrip('/')}/chat/completions"
 
-            response = await client.chat.completions.create(**api_params)
+            # Prepare headers
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
 
-            if stream:
-                # Streaming response
-                full_response = ""
-                async for chunk in response:
-                    if chunk.choices[0].delta.content:
-                        content = chunk.choices[0].delta.content
-                        full_response += content
-                        yield content
+            print(f"🌐 Request URL: {url}")
+            print(f"📦 Request params: {json.dumps(api_params, indent=2, ensure_ascii=False)}")
 
-                # Log complete response
-                model_log_service.append_log(f"API Response (streaming) - Length: {len(full_response)} chars")
-                model_log_service.append_log(f"Response content: {full_response[:200]}..." if len(full_response) > 200 else f"Response content: {full_response}")
-            else:
-                # Non-streaming response
-                response_content = response.choices[0].message.content
-                model_log_service.append_log(f"API Response - Length: {len(response_content)} chars")
-                model_log_service.append_log(f"Response content: {response_content[:200]}..." if len(response_content) > 200 else f"Response content: {response_content}")
-                yield response_content
+            async with httpx.AsyncClient(timeout=300.0) as client:
+                if stream:
+                    # Streaming response with SSE
+                    full_response = ""
+                    async with client.stream(
+                        "POST",
+                        url,
+                        headers=headers,
+                        json=api_params
+                    ) as response:
+                        response.raise_for_status()
 
+                        # Parse SSE stream
+                        async for line in response.aiter_lines():
+                            if not line.strip():
+                                continue
+
+                            # SSE format: "data: {...}"
+                            if line.startswith("data: "):
+                                data_str = line[6:]  # Remove "data: " prefix
+
+                                # Check for stream end
+                                if data_str == "[DONE]":
+                                    break
+
+                                try:
+                                    data = json.loads(data_str)
+                                    # Extract content from delta
+                                    if "choices" in data and len(data["choices"]) > 0:
+                                        delta = data["choices"][0].get("delta", {})
+                                        content = delta.get("content", "")
+                                        if content:
+                                            full_response += content
+                                            yield content
+                                except json.JSONDecodeError:
+                                    continue
+
+                    # Log complete response
+                    model_log_service.append_log(f"API Response (streaming) - Length: {len(full_response)} chars")
+                    model_log_service.append_log(f"Response content: {full_response[:200]}..." if len(full_response) > 200 else f"Response content: {full_response}")
+
+                else:
+                    # Non-streaming response
+                    response = await client.post(
+                        url,
+                        headers=headers,
+                        json=api_params
+                    )
+                    response.raise_for_status()
+
+                    data = response.json()
+                    response_content = data["choices"][0]["message"]["content"]
+
+                    model_log_service.append_log(f"API Response - Length: {len(response_content)} chars")
+                    model_log_service.append_log(f"Response content: {response_content[:200]}..." if len(response_content) > 200 else f"Response content: {response_content}")
+                    yield response_content
+
+        except httpx.HTTPStatusError as e:
+            error_message = f"LLM API HTTP Error: {e.response.status_code} - {e.response.text}"
+            print(error_message)
+            model_log_service.append_log(f"API Error: {error_message}")
+            yield error_message
         except Exception as e:
             error_message = f"LLM API Error: {str(e)}"
             print(error_message)
