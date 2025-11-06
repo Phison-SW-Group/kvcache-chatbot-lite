@@ -22,21 +22,7 @@ A modern multi-turn conversation chatbot with document upload support and KV cac
 
 ### Installation & Setup
 
-**Option A: Using Make (Recommended)**
-```bash
-git clone <repository-url>
-cd kvcache_chatbot
-make start
-```
-
-**Option B: Using npm**
-```bash
-git clone <repository-url>
-cd kvcache_chatbot
-npm start
-```
-
-**Option C: Manual Setup (Recommended for First-Time Setup)**
+**Manual Setup (Recommended for First-Time Setup)**
 
 #### ⚙️ 1. Setup Configuration
 ```bash
