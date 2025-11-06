@@ -79,8 +79,8 @@ lsof -i :13141  # This is the default model deployment port
 
 ### Access the Application
 - **Frontend**: http://localhost:7860
-- **Backend API**: http://localhost:3023 (default, customizable via `--port`)
-- **API Documentation**: http://localhost:3023/docs
+- **Backend API**: http://localhost:8000 (default, customizable via `--port`)
+- **API Documentation**: http://localhost:8000/docs
 
 ## 📚 Documentation
 
